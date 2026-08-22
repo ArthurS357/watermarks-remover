@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hmac
 import json
 import os
 import sys
@@ -59,7 +60,7 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not API_KEY:
             return True
-        return self.headers.get("Authorization", "") == f"Bearer {API_KEY}"
+        return hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {API_KEY}")
 
     def _read_json(self) -> dict[str, Any] | None:
         raw = self.headers.get("Content-Length")
@@ -149,20 +150,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global API_KEY  # noqa: PLW0603 — CLI overrides env
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default=os.environ.get("WATERMARKS_SYNTHID_SERVER_HOST", "127.0.0.1"))
     p.add_argument(
         "--port", type=int, default=int(os.environ.get("WATERMARKS_SYNTHID_SERVER_PORT", "8766"))
     )
-    p.add_argument("--api-key", default=API_KEY, help="require this bearer token (default: none)")
     args = p.parse_args()
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(
             f"warning: binding {args.host} — intended for a trusted network only", file=sys.stderr
         )
-    API_KEY = args.api_key
     print(f"synthid scorer sidecar {VERSION} on http://{args.host}:{args.port}", file=sys.stderr)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
