@@ -30,6 +30,7 @@ from common import (
 from container_meta import (
     _SVG_METADATA_CLOSE_RE,
     _SVG_METADATA_OPEN_RE,
+    EMBEDDED_MEDIA_CLEAN_FAILED,
     MAX_ZIP_DECOMPRESSED_BYTES,
     ZipBudgetExceeded,
     _check_zip_budget,
@@ -415,7 +416,7 @@ def test_docx_embedded_media_clean_failure_marks_audit_incomplete(tmp_path, monk
     result = clean_container(src, dest, fmt="docx")
 
     assert result["audit_incomplete"] is True
-    assert any(a.startswith("embedded media clean failed:") for a in result["actions"])
+    assert any(a.startswith(EMBEDDED_MEDIA_CLEAN_FAILED) for a in result["actions"])
 
 
 def test_epub_embedded_media_clean_failure_marks_audit_incomplete(tmp_path, monkeypatch):
@@ -431,7 +432,7 @@ def test_epub_embedded_media_clean_failure_marks_audit_incomplete(tmp_path, monk
     result = clean_container(src, dest, fmt="epub")
 
     assert result["audit_incomplete"] is True
-    assert any(a.startswith("embedded media clean failed:") for a in result["actions"])
+    assert any(a.startswith(EMBEDDED_MEDIA_CLEAN_FAILED) for a in result["actions"])
 
 
 def test_html_embedded_data_uri_clean_failure_marks_audit_incomplete(tmp_path, monkeypatch):
@@ -449,7 +450,7 @@ def test_html_embedded_data_uri_clean_failure_marks_audit_incomplete(tmp_path, m
     result = clean_container(src, dest, fmt="html")
 
     assert result["audit_incomplete"] is True
-    assert any(a.startswith("embedded media clean failed:") for a in result["actions"])
+    assert any(a.startswith(EMBEDDED_MEDIA_CLEAN_FAILED) for a in result["actions"])
 
 
 def test_clean_container_has_no_audit_incomplete_when_nothing_fails(tmp_path):
@@ -460,3 +461,27 @@ def test_clean_container_has_no_audit_incomplete_when_nothing_fails(tmp_path):
     result = clean_container(src, dest, fmt="docx")
 
     assert result["audit_incomplete"] is False
+
+
+def test_audit_incomplete_tracks_a_renamed_sentinel(tmp_path, monkeypatch):
+    # audit_incomplete is computed from a shared constant, not an
+    # independently duplicated literal, specifically so that renaming the
+    # message in one place can't silently desync it from the check. Prove
+    # that by renaming the constant itself and confirming detection still
+    # works -- this would fail if either the write or read side ever goes
+    # back to a hardcoded copy of the string.
+    monkeypatch.setattr(container_meta, "EMBEDDED_MEDIA_CLEAN_FAILED", "renamed sentinel:")
+
+    def _raise(*_args, **_kwargs):
+        raise ValueError("simulated malformed PNG")
+
+    monkeypatch.setattr(container_meta, "strip_png", _raise)
+
+    src = tmp_path / "in.docx"
+    src.write_bytes(_docx_with_media())
+    dest = tmp_path / "out.docx"
+
+    result = clean_container(src, dest, fmt="docx")
+
+    assert result["audit_incomplete"] is True
+    assert any(a.startswith("renamed sentinel:") for a in result["actions"])

@@ -230,7 +230,9 @@ def test_clean_docx_with_failed_embedded_media_marks_audit_incomplete(conn, monk
     status, body = _post(conn, "/clean", {"file": _b64(data), "name": "doc.docx"})
     assert status == 200
     assert body["report"]["audit_incomplete"] is True
-    assert any(a.startswith("embedded media clean failed:") for a in body["report"]["actions"])
+    assert any(
+        a.startswith(container_meta.EMBEDDED_MEDIA_CLEAN_FAILED) for a in body["report"]["actions"]
+    )
 
 
 def test_unknown_option_rejected(conn):

@@ -218,6 +218,15 @@ RE_DATA_IMAGE_URI = re.compile(
     re.I,
 )
 
+# Sentinel prefix for an "actions" entry recording that one embedded image
+# failed to clean and was kept as-is (watermark intact). Three call sites --
+# the data-URI cleaner below, the OOXML media loop, and the EPUB media loop
+# -- each append a message starting with this exact constant; clean_container()
+# reads it back to compute `audit_incomplete`. Shared as one constant instead
+# of duplicating the literal at both the write and read ends, so a future
+# rewording of the message can't silently desync the two.
+EMBEDDED_MEDIA_CLEAN_FAILED = "embedded media clean failed:"
+
 
 def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
     has_c2pa = False
@@ -317,7 +326,7 @@ def _clean_embedded_data_uris(
             # The stripper crashed on this embedded image: it is kept as-is,
             # watermark intact. Record that explicitly rather than silently
             # falling through as if there had been nothing to clean.
-            actions.append(f"embedded media clean failed: data:image/{mime} kept as-is")
+            actions.append(f"{EMBEDDED_MEDIA_CLEAN_FAILED} data:image/{mime} kept as-is")
             return full_match
 
         if not any("drop" in a.lower() for a in sub_actions) or cleaned_bytes == data:
@@ -1226,7 +1235,7 @@ def _scrub_ooxml_zip(
                 except Exception:
                     # Kept as-is, watermark intact -- record the failure
                     # rather than silently reading as nothing-to-clean.
-                    actions.append(f"embedded media clean failed: {name} kept as-is")
+                    actions.append(f"{EMBEDDED_MEDIA_CLEAN_FAILED} {name} kept as-is")
                 if any("drop" in a.lower() for a in sub_actions) and cleaned_bytes != raw:
                     actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
                     raw = cleaned_bytes
@@ -1702,7 +1711,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                 except Exception:
                     # Kept as-is, watermark intact -- record the failure
                     # rather than silently reading as nothing-to-clean.
-                    actions.append(f"embedded media clean failed: {name} kept as-is")
+                    actions.append(f"{EMBEDDED_MEDIA_CLEAN_FAILED} {name} kept as-is")
                 if any("drop" in a.lower() for a in sub_actions) and cleaned != raw:
                     actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
                     raw = cleaned
@@ -2119,10 +2128,10 @@ def clean_container(
 
     after = inspect_container(dest)
     # True when at least one embedded image failed to clean and was kept
-    # as-is (see the "embedded media clean failed:" actions above). The
-    # container write itself still succeeded -- this only means the result
-    # is not a verified-clean file and must never be reported as one.
-    audit_incomplete = any(a.startswith("embedded media clean failed:") for a in actions)
+    # as-is (see EMBEDDED_MEDIA_CLEAN_FAILED above). The container write
+    # itself still succeeded -- this only means the result is not a
+    # verified-clean file and must never be reported as one.
+    audit_incomplete = any(a.startswith(EMBEDDED_MEDIA_CLEAN_FAILED) for a in actions)
     return {
         "input": str(path),
         "output": str(dest),
