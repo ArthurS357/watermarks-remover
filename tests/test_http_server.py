@@ -261,12 +261,29 @@ def test_oversized_body_413(conn, monkeypatch):
 
 def test_auth_required(conn, monkeypatch):
     monkeypatch.setattr(server, "API_KEY", "sekret")
-    status, _ = _post(conn, "/health", {"anything": 1})
+    status, _ = _post(conn, "/inspect", {"file": _b64(b"hi")})
     assert status == 401
-    conn.request("GET", "/health", headers={"Authorization": "Bearer sekret"})
+    conn.request("GET", "/capabilities", headers={"Authorization": "Bearer sekret"})
     resp = conn.getresponse()
     assert resp.status == 200
     resp.read()
+
+
+def test_health_is_never_authenticated(conn, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    status, body = _get(conn, "/health")
+    assert status == 200
+    assert body["ok"] is True
+
+
+def test_openapi_spec_marks_health_as_public(conn, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    conn.request("GET", "/openapi.json", headers={"Authorization": "Bearer sekret"})
+    resp = conn.getresponse()
+    body = json.loads(resp.read())
+    assert resp.status == 200
+    assert body["paths"]["/health"]["get"]["security"] == []
+    assert body["security"] == [{"bearerAuth": []}]
 
 
 def test_404(conn):
