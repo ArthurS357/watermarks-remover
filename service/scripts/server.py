@@ -43,6 +43,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from functools import cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,6 +82,21 @@ MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
 # already bounds total payload size; this bounds worst-case CPU/thread time from
 # a request packing many tiny files into one call.
 MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
+
+# ThreadingHTTPServer spawns one thread per connection with no cap of its own.
+# Each in-flight POST can hold up to MAX_BODY_BYTES of decoded request body in
+# memory at once; an unbounded number of concurrent uploads is a memory-DoS.
+# Bounded to a fixed number of concurrently *processed* POST requests -- a
+# request that cannot acquire a slot gets 503 immediately rather than piling
+# up. GET (/health, /capabilities, /openapi.json) never decodes a body, so it
+# is not gated.
+MAX_CONCURRENT_REQUESTS = int(os.environ.get("WATERMARKS_MAX_CONCURRENT_REQUESTS", "16"))
+_REQUEST_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+
+# Seconds a connection may sit idle (no request line/headers/body sent) before
+# the handler drops it. Mitigates a slowloris-style client that opens a
+# connection and then trickles bytes to hold a thread open indefinitely.
+REQUEST_TIMEOUT_SECONDS = float(os.environ.get("WATERMARKS_SERVER_REQUEST_TIMEOUT", "30"))
 
 ALLOWED_CLEAN_OPTIONS = {
     "nfkc": bool,
@@ -833,6 +849,10 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
 
 class Handler(BaseHTTPRequestHandler):
     server_version = f"watermarks-remover/{VERSION}"
+    # StreamRequestHandler.setup() applies this to the connection socket, so
+    # a client that opens a connection and then stalls (slowloris) gets
+    # dropped instead of holding a thread open indefinitely.
+    timeout = REQUEST_TIMEOUT_SECONDS
 
     def log_message(self, fmt: str, *args: object) -> None:
         eprint(f"{self.address_string()} - {fmt % args}")
@@ -886,6 +906,22 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
+        # Every POST body decodes into memory (up to MAX_BODY_BYTES); cap how
+        # many are processed at once rather than let concurrency multiply
+        # that unboundedly. A full slot table answers fast (503) instead of
+        # queuing, so a caller sees backpressure instead of a stall.
+        if not _REQUEST_SLOTS.acquire(blocking=False):
+            self._respond(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "error": "server busy, too many concurrent requests"},
+            )
+            return
+        try:
+            self._do_POST()
+        finally:
+            _REQUEST_SLOTS.release()
+
+    def _do_POST(self) -> None:
         path = urlparse(self.path).path
         if not self._authorized():
             self._respond(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})

@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import socket
 import struct
 import sys
 import threading
+import time
 import zlib
 from pathlib import Path
 
@@ -307,6 +309,44 @@ def test_main_refuses_insecure_bind_before_starting_server(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["server.py", "--host", "0.0.0.0"])  # noqa: S104
     assert server.main() == 2
     assert "refusing to bind" in capsys.readouterr().err
+
+
+def test_concurrency_limit_returns_503(conn, monkeypatch):
+    full = threading.BoundedSemaphore(1)
+    full.acquire()  # the only slot is already taken before the request arrives
+    monkeypatch.setattr(server, "_REQUEST_SLOTS", full)
+
+    status, body = _post(conn, "/inspect", {"file": _b64(b"hello")})
+    assert status == 503
+    assert body["ok"] is False
+
+    full.release()
+    status, _body = _post(conn, "/inspect", {"file": _b64(b"hello")})
+    assert status == 200
+
+
+def test_slow_client_is_dropped_after_timeout(monkeypatch):
+    monkeypatch.setattr(server.Handler, "timeout", 0.2)
+    srv = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        sock = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+        try:
+            start = time.monotonic()
+            # Send nothing: a slowloris-style client that opens a connection
+            # and never sends a request line should be dropped once the
+            # (patched, short) per-connection timeout elapses.
+            data = sock.recv(1024)
+            elapsed = time.monotonic() - start
+            assert data == b""
+            assert elapsed < 5
+        finally:
+            sock.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
 
 
 def test_404(conn):
