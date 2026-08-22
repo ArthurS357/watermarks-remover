@@ -990,11 +990,35 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -> bool:
+    """True when *host* is non-loopback, no API key is set, and no opt-out was given.
+
+    A non-loopback bind with no auth exposes the cleaning API (arbitrary file
+    upload/processing) to anyone who can reach the host. Split out from
+    main() so the decision is unit-testable without touching argparse or a
+    real socket.
+    """
+    return host not in _LOOPBACK_HOSTS and not api_key and not allow_insecure_bind
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default=os.environ.get("WATERMARKS_SERVER_HOST", "127.0.0.1"))
     p.add_argument(
         "--port", type=int, default=int(os.environ.get("WATERMARKS_SERVER_PORT", "8765"))
+    )
+    p.add_argument(
+        "--allow-insecure-bind",
+        action="store_true",
+        default=bool(os.environ.get("WATERMARKS_SERVER_ALLOW_INSECURE_BIND")),
+        help=(
+            "allow binding a non-loopback host with no API key set (default: refuse). "
+            "Only pass this when the real access boundary is elsewhere, e.g. a container "
+            "port published as 127.0.0.1:<port>:<port>."
+        ),
     )
     p.add_argument("-V", "--version", action="store_true", help="print version and exit")
     args = p.parse_args()
@@ -1003,7 +1027,17 @@ def main() -> int:
         print(VERSION)
         return 0
 
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
+    if _refuses_insecure_bind(args.host, API_KEY, args.allow_insecure_bind):
+        eprint(
+            f"error: refusing to bind {args.host} with no API key set — this would expose "
+            "the cleaning API (arbitrary file upload/processing) to anyone who can reach "
+            "this host. Set WATERMARKS_SERVER_API_KEY, or pass --allow-insecure-bind / set "
+            "WATERMARKS_SERVER_ALLOW_INSECURE_BIND=1 if the real access boundary is "
+            "elsewhere (e.g. a container port published as 127.0.0.1:<port>:<port>)."
+        )
+        return 2
+
+    if args.host not in _LOOPBACK_HOSTS:
         eprint(f"warning: binding {args.host} — intended for a trusted network only")
     if API_KEY:
         eprint("API key required for requests")

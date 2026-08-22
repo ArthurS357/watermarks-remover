@@ -286,6 +286,29 @@ def test_openapi_spec_marks_health_as_public(conn, monkeypatch):
     assert body["security"] == [{"bearerAuth": []}]
 
 
+def test_refuses_insecure_bind_with_no_api_key():
+    assert server._refuses_insecure_bind("0.0.0.0", "", False) is True  # noqa: S104
+
+
+def test_allows_insecure_bind_with_explicit_opt_out():
+    assert server._refuses_insecure_bind("0.0.0.0", "", True) is False  # noqa: S104
+
+
+def test_allows_non_loopback_bind_with_api_key():
+    assert server._refuses_insecure_bind("0.0.0.0", "sekret", False) is False  # noqa: S104
+
+
+def test_allows_loopback_bind_with_no_api_key():
+    assert server._refuses_insecure_bind("127.0.0.1", "", False) is False
+
+
+def test_main_refuses_insecure_bind_before_starting_server(monkeypatch, capsys):
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setattr(sys, "argv", ["server.py", "--host", "0.0.0.0"])  # noqa: S104
+    assert server.main() == 2
+    assert "refusing to bind" in capsys.readouterr().err
+
+
 def test_404(conn):
     status, _body = _get(conn, "/nope")
     assert status == 404

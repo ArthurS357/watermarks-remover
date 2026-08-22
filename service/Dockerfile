@@ -71,4 +71,11 @@ ENV WATERMARKS_SERVER_VERSION=${VERSION} \
 WORKDIR /app
 EXPOSE 8765
 ENTRYPOINT ["python3"]
-CMD ["/app/scripts/server.py", "--host", "0.0.0.0"]
+# --allow-insecure-bind: server.py refuses a non-loopback bind with no API
+# key set (arbitrary file upload/processing exposed to anyone who can reach
+# the host). Inside a container that refusal is a false positive -- Docker
+# port publishing requires binding 0.0.0.0 here regardless -- because the
+# real access boundary is the *host* port mapping (compose.yaml publishes
+# 127.0.0.1:8765:8765 by default). Set WATERMARKS_SERVER_API_KEY when
+# publishing this image on a non-loopback host mapping.
+CMD ["/app/scripts/server.py", "--host", "0.0.0.0", "--allow-insecure-bind"]
