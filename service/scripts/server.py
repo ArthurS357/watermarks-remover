@@ -148,6 +148,39 @@ def _tool_usable(cmd: str) -> bool:
     return r.returncode == 0
 
 
+def _degradation_warnings(kind: str, fmt: str | None) -> list[str]:
+    """Explicit, structured warnings for a /clean result cleaned without a tool it needed.
+
+    The cleaning pipeline already degrades gracefully when exiftool/qpdf/
+    c2patool are missing (see clean_pdf, run_optional_tools) -- but that
+    degradation is prose buried in the free-text `actions` list, discoverable
+    only by a caller that greps for "warning:"/"skipped". A client is
+    expected to check /capabilities before recommending a cleaning path, but
+    nothing forces it to; this makes the same signal a structured, always
+    machine-checkable field on the one response that matters most: the
+    result of the clean the user actually asked for.
+    """
+    warnings: list[str] = []
+    if kind == "image":
+        if not _tool_usable("exiftool"):
+            warnings.append(
+                "exiftool not available; image metadata strip may leave residual EXIF/XMP"
+            )
+        if not _tool_usable("c2patool"):
+            warnings.append("c2patool not available; C2PA manifests are not fully inspected")
+    elif kind == "container" and fmt == "pdf":
+        if not _tool_usable("qpdf"):
+            warnings.append(
+                "qpdf not available; pdf strip incomplete "
+                "(original metadata bytes may remain recoverable)"
+            )
+        if not _tool_usable("exiftool"):
+            warnings.append("exiftool not available; pdf strip is best-effort only")
+        if not _tool_usable("c2patool"):
+            warnings.append("c2patool not available; C2PA manifests are not fully inspected")
+    return warnings
+
+
 def capabilities() -> dict[str, Any]:
     return {
         "version": VERSION,
@@ -838,6 +871,10 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             report = {"kind": "container", **result}
         report.pop("input", None)
         report.pop("output", None)
+
+    warnings = _degradation_warnings(kind, report.get("format"))
+    if warnings:
+        report["warnings"] = warnings
 
     return {
         "ok": True,

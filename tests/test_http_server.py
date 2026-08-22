@@ -166,6 +166,42 @@ def test_clean_png_strips_metadata(conn):
     assert any("tEXt" in a for a in body["report"]["actions"]) or "actions" in body["report"]
 
 
+def test_clean_image_reports_missing_tool_warnings(conn, monkeypatch):
+    monkeypatch.setattr(server, "_tool_usable", lambda cmd: False)
+    data = _watermarked_png()
+    status, body = _post(conn, "/clean", {"file": _b64(data), "name": "shot.png"})
+    assert status == 200
+    warnings = body["report"]["warnings"]
+    assert any("exiftool" in w for w in warnings)
+    assert any("c2patool" in w for w in warnings)
+
+
+def test_clean_pdf_reports_missing_qpdf_warning(conn, monkeypatch):
+    monkeypatch.setattr(server, "_tool_usable", lambda cmd: False)
+    data = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n"
+    status, body = _post(conn, "/clean", {"file": _b64(data), "name": "doc.pdf"})
+    assert status == 200
+    assert body["report"]["format"] == "pdf"
+    warnings = body["report"]["warnings"]
+    assert any("qpdf" in w for w in warnings)
+    assert any("exiftool" in w for w in warnings)
+    assert any("c2patool" in w for w in warnings)
+
+
+def test_clean_reports_no_warnings_when_tools_available(conn, monkeypatch):
+    monkeypatch.setattr(server, "_tool_usable", lambda cmd: True)
+    data = _watermarked_png()
+    status, body = _post(conn, "/clean", {"file": _b64(data), "name": "shot.png"})
+    assert status == 200
+    assert "warnings" not in body["report"]
+
+
+def test_clean_text_has_no_warnings_key(conn):
+    status, body = _post(conn, "/clean", {"file": _b64(b"hello"), "name": "note.txt"})
+    assert status == 200
+    assert "warnings" not in body["report"]
+
+
 def test_clean_markdown_container(conn):
     data = (ROOT / "tests" / "fixtures" / "sample_ai.md").read_bytes()
     status, body = _post(conn, "/clean", {"file": _b64(data), "name": "note.md"})
