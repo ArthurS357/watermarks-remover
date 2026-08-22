@@ -27,6 +27,14 @@ services:
     environment:
       # Empty by default (no auth). Set to require `Authorization: Bearer <key>`.
       WATERMARKS_SERVER_API_KEY: ${WATERMARKS_SERVER_API_KEY:-}
+      # server.py refuses a non-loopback bind with no API key set (the image
+      # always binds 0.0.0.0 -- Docker port publishing needs that regardless
+      # of what the outer `-p` maps to). This service's actual access
+      # boundary is the host port mapping above (127.0.0.1:8765:8765, not
+      # published elsewhere), so it opts back in explicitly here. Override
+      # to an empty value to make this service require an API key too, e.g.
+      # if you republish the port on a non-loopback interface.
+      WATERMARKS_SERVER_ALLOW_INSECURE_BIND: ${WATERMARKS_SERVER_ALLOW_INSECURE_BIND:-1}
       # Optional SynthID image scorer sidecar (heavy profile).
       WATERMARKS_SYNTHID_SCORER_URL: ${WATERMARKS_SYNTHID_SCORER_URL:-}
       WATERMARKS_SYNTHID_SCORER_API_KEY: ${WATERMARKS_SYNTHID_SCORER_API_KEY:-}

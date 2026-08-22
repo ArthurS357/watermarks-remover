@@ -71,11 +71,14 @@ ENV WATERMARKS_SERVER_VERSION=${VERSION} \
 WORKDIR /app
 EXPOSE 8765
 ENTRYPOINT ["python3"]
-# --allow-insecure-bind: server.py refuses a non-loopback bind with no API
-# key set (arbitrary file upload/processing exposed to anyone who can reach
-# the host). Inside a container that refusal is a false positive -- Docker
-# port publishing requires binding 0.0.0.0 here regardless -- because the
-# real access boundary is the *host* port mapping (compose.yaml publishes
-# 127.0.0.1:8765:8765 by default). Set WATERMARKS_SERVER_API_KEY when
-# publishing this image on a non-loopback host mapping.
-CMD ["/app/scripts/server.py", "--host", "0.0.0.0", "--allow-insecure-bind"]
+# server.py refuses a non-loopback bind with no API key set (arbitrary file
+# upload/processing exposed to anyone who can reach the host) unless
+# WATERMARKS_SERVER_ALLOW_INSECURE_BIND is set -- deliberately *not* set
+# here. The image binds 0.0.0.0 because Docker port publishing requires it
+# regardless of whether the outer `-p` maps to loopback or every interface,
+# so the image cannot tell which one it is; the safe default is to refuse
+# and make the caller say so. compose.yaml's wr-core service, whose actual
+# access boundary *is* loopback-only (127.0.0.1:8765:8765), opts back in
+# via that env var. A bare `docker run -p 8765:8765` with no API key and no
+# override now refuses to start instead of silently exposing the API.
+CMD ["/app/scripts/server.py", "--host", "0.0.0.0"]

@@ -363,9 +363,48 @@ def test_allows_loopback_bind_with_no_api_key():
 
 def test_main_refuses_insecure_bind_before_starting_server(monkeypatch, capsys):
     monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.delenv("WATERMARKS_SERVER_ALLOW_INSECURE_BIND", raising=False)
     monkeypatch.setattr(sys, "argv", ["server.py", "--host", "0.0.0.0"])  # noqa: S104
     assert server.main() == 2
     assert "refusing to bind" in capsys.readouterr().err
+
+
+def test_main_allows_insecure_bind_via_env_var(monkeypatch):
+    # compose.yaml's wr-core service sets this by default -- its actual
+    # access boundary is the host port mapping, not the in-container bind.
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setenv("WATERMARKS_SERVER_ALLOW_INSECURE_BIND", "1")
+    monkeypatch.setattr(sys, "argv", ["server.py", "--host", "0.0.0.0"])  # noqa: S104
+
+    class _FakeServer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(server, "ThreadingHTTPServer", _FakeServer)
+    assert server.main() == 0
+
+
+@pytest.mark.parametrize("value", ["1", "true", "True", "YES", "on", "On"])
+def test_flag_env_true_values(monkeypatch, value):
+    monkeypatch.setenv("WATERMARKS_TEST_FLAG", value)
+    assert server._flag_env("WATERMARKS_TEST_FLAG") is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "False", "no", "", "anything-else"])
+def test_flag_env_false_values(monkeypatch, value):
+    monkeypatch.setenv("WATERMARKS_TEST_FLAG", value)
+    assert server._flag_env("WATERMARKS_TEST_FLAG") is False
+
+
+def test_flag_env_unset_is_false(monkeypatch):
+    monkeypatch.delenv("WATERMARKS_TEST_FLAG", raising=False)
+    assert server._flag_env("WATERMARKS_TEST_FLAG") is False
 
 
 def test_concurrency_limit_returns_503(conn, monkeypatch):

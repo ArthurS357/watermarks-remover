@@ -1066,6 +1066,16 @@ class Handler(BaseHTTPRequestHandler):
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
+def _flag_env(name: str) -> bool:
+    """Parse a boolean env var the same way rewrite_text.py does.
+
+    bool(os.environ.get(name)) treats *any* non-empty string as true, so
+    WATERMARKS_SERVER_ALLOW_INSECURE_BIND=0 -- someone's explicit attempt to
+    disable it -- would otherwise enable it.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -> bool:
     """True when *host* is non-loopback, no API key is set, and no opt-out was given.
 
@@ -1086,7 +1096,7 @@ def main() -> int:
     p.add_argument(
         "--allow-insecure-bind",
         action="store_true",
-        default=bool(os.environ.get("WATERMARKS_SERVER_ALLOW_INSECURE_BIND")),
+        default=_flag_env("WATERMARKS_SERVER_ALLOW_INSECURE_BIND"),
         help=(
             "allow binding a non-loopback host with no API key set (default: refuse). "
             "Only pass this when the real access boundary is elsewhere, e.g. a container "
