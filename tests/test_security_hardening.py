@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import re
@@ -35,11 +36,15 @@ from container_meta import (
     _drop_tag_blocks,
     _pdf_structured_blob,
     _read_zip_member,
+    clean_container,
     clean_html,
     clean_odt,
     clean_svg,
     inspect_docx,
 )
+
+from tests.test_clean_image import _minimal_png_with_text
+from tests.test_epub import _build_epub
 
 
 def test_safe_arg_prefixes_leading_dash():
@@ -372,3 +377,86 @@ def test_reconfigure_stream_writes_utf8():
     stream.write("\u200b")
     stream.flush()
     assert buf.getvalue() == "\u200b".encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Embedded-media clean failures must never read as a clean container.
+#
+# The DOCX/EPUB media loop and the HTML/Markdown data-URI cleaner each strip
+# one embedded image inline; if the format-specific stripper (strip_png here)
+# raises on a malformed member, the *original* bytes -- watermark intact --
+# were silently kept with no record of the failure. A container that failed
+# to clean one embedded image must never report the same as a container that
+# had nothing to clean.
+# ---------------------------------------------------------------------------
+
+
+def _docx_with_media() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "word/document.xml",
+            "<w:document><w:body><w:p><w:r><w:t>Doc</w:t></w:r></w:p></w:body></w:document>",
+        )
+        zf.writestr("word/media/image1.png", _minimal_png_with_text())
+    return buf.getvalue()
+
+
+def test_docx_embedded_media_clean_failure_marks_audit_incomplete(tmp_path, monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise ValueError("simulated malformed PNG")
+
+    monkeypatch.setattr(container_meta, "strip_png", _raise)
+
+    src = tmp_path / "in.docx"
+    src.write_bytes(_docx_with_media())
+    dest = tmp_path / "out.docx"
+
+    result = clean_container(src, dest, fmt="docx")
+
+    assert result["audit_incomplete"] is True
+    assert any(a.startswith("embedded media clean failed:") for a in result["actions"])
+
+
+def test_epub_embedded_media_clean_failure_marks_audit_incomplete(tmp_path, monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise ValueError("simulated malformed PNG")
+
+    monkeypatch.setattr(container_meta, "strip_png", _raise)
+
+    src = tmp_path / "in.epub"
+    src.write_bytes(_build_epub())
+    dest = tmp_path / "out.epub"
+
+    result = clean_container(src, dest, fmt="epub")
+
+    assert result["audit_incomplete"] is True
+    assert any(a.startswith("embedded media clean failed:") for a in result["actions"])
+
+
+def test_html_embedded_data_uri_clean_failure_marks_audit_incomplete(tmp_path, monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise ValueError("simulated malformed PNG")
+
+    monkeypatch.setattr(container_meta, "strip_png", _raise)
+
+    png_b64 = base64.b64encode(_minimal_png_with_text()).decode("ascii")
+    html = f'<html><body><img src="data:image/png;base64,{png_b64}"></body></html>'
+    src = tmp_path / "in.html"
+    src.write_text(html, encoding="utf-8")
+    dest = tmp_path / "out.html"
+
+    result = clean_container(src, dest, fmt="html")
+
+    assert result["audit_incomplete"] is True
+    assert any(a.startswith("embedded media clean failed:") for a in result["actions"])
+
+
+def test_clean_container_has_no_audit_incomplete_when_nothing_fails(tmp_path):
+    src = tmp_path / "in.docx"
+    src.write_bytes(_docx_with_media())
+    dest = tmp_path / "out.docx"
+
+    result = clean_container(src, dest, fmt="docx")
+
+    assert result["audit_incomplete"] is False

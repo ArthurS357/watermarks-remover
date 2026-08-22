@@ -314,6 +314,10 @@ def _clean_embedded_data_uris(
             elif "svg" in mime.lower() or data.lstrip().startswith(b"<"):
                 cleaned_bytes, sub_actions = clean_svg(data)
         except Exception:
+            # The stripper crashed on this embedded image: it is kept as-is,
+            # watermark intact. Record that explicitly rather than silently
+            # falling through as if there had been nothing to clean.
+            actions.append(f"embedded media clean failed: data:image/{mime} kept as-is")
             return full_match
 
         if not any("drop" in a.lower() for a in sub_actions) or cleaned_bytes == data:
@@ -1219,8 +1223,10 @@ def _scrub_ooxml_zip(
                         cleaned_bytes, sub_actions = strip_tiff(raw, strip_all_metadata=True)
                     elif name.lower().endswith(".svg") or raw.lstrip().startswith(b"<"):
                         cleaned_bytes, sub_actions = clean_svg(raw)
-                except Exception:  # noqa: S110 - malformed embedded media; keep original part
-                    pass
+                except Exception:
+                    # Kept as-is, watermark intact -- record the failure
+                    # rather than silently reading as nothing-to-clean.
+                    actions.append(f"embedded media clean failed: {name} kept as-is")
                 if any("drop" in a.lower() for a in sub_actions) and cleaned_bytes != raw:
                     actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
                     raw = cleaned_bytes
@@ -1693,8 +1699,10 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                         cleaned, sub_actions = strip_tiff(raw, strip_all_metadata=True)
                     elif low.endswith(".svg") or raw.lstrip().startswith(b"<"):
                         cleaned, sub_actions = clean_svg(raw)
-                except Exception:  # noqa: S110 - malformed embedded media; keep original
-                    pass
+                except Exception:
+                    # Kept as-is, watermark intact -- record the failure
+                    # rather than silently reading as nothing-to-clean.
+                    actions.append(f"embedded media clean failed: {name} kept as-is")
                 if any("drop" in a.lower() for a in sub_actions) and cleaned != raw:
                     actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
                     raw = cleaned
@@ -2110,6 +2118,11 @@ def clean_container(
         raise ValueError(f"unsupported container format: {fmt}")
 
     after = inspect_container(dest)
+    # True when at least one embedded image failed to clean and was kept
+    # as-is (see the "embedded media clean failed:" actions above). The
+    # container write itself still succeeded -- this only means the result
+    # is not a verified-clean file and must never be reported as one.
+    audit_incomplete = any(a.startswith("embedded media clean failed:") for a in actions)
     return {
         "input": str(path),
         "output": str(dest),
@@ -2120,5 +2133,6 @@ def clean_container(
         "still_has_c2pa": after.has_c2pa,
         "still_has_ai_metadata": after.has_ai_metadata,
         "post_findings": after.findings,
+        "audit_incomplete": audit_incomplete,
         "meta": meta,
     }

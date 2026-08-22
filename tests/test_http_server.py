@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import base64
 import http.client
+import io
 import json
 import socket
 import struct
 import sys
 import threading
 import time
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -19,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import container_meta
 import server
 
 
@@ -210,6 +213,24 @@ def test_clean_markdown_container(conn):
     cleaned = base64.b64decode(body["cleaned"]).decode("utf-8")
     assert "generator: Claude" not in cleaned
     assert body["report"]["format"] == "markdown"
+
+
+def test_clean_docx_with_failed_embedded_media_marks_audit_incomplete(conn, monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise ValueError("simulated malformed PNG")
+
+    monkeypatch.setattr(container_meta, "strip_png", _raise)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("word/document.xml", "<w:document/>")
+        zf.writestr("word/media/image1.png", _watermarked_png())
+    data = buf.getvalue()
+
+    status, body = _post(conn, "/clean", {"file": _b64(data), "name": "doc.docx"})
+    assert status == 200
+    assert body["report"]["audit_incomplete"] is True
+    assert any(a.startswith("embedded media clean failed:") for a in body["report"]["actions"])
 
 
 def test_unknown_option_rejected(conn):
