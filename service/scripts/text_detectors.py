@@ -77,6 +77,12 @@ def _worker_port() -> int | None:
     return port if 0 < port < 65536 else None
 
 
+# A detect response is a small JSON report, not file content; cap the line
+# read from the worker socket so a misbehaving/compromised worker that never
+# sends a newline can't grow the read buffer without bound.
+MAX_WORKER_LINE_BYTES = 4 << 20  # 4 MiB
+
+
 def _detect_via_worker(port: int, text: str, timeout: float) -> dict[str, Any]:
     """One detect request to a resident MarkLLM serve worker over loopback TCP."""
     import socket as _socket
@@ -84,9 +90,11 @@ def _detect_via_worker(port: int, text: str, timeout: float) -> dict[str, Any]:
     with _socket.create_connection(("127.0.0.1", port), timeout=timeout) as conn:
         conn.sendall((json.dumps({"op": "detect", "text": text}) + "\n").encode("utf-8"))
         f = conn.makefile("r", encoding="utf-8")
-        line = f.readline()
+        line = f.readline(MAX_WORKER_LINE_BYTES)
     if not line:
         raise RuntimeError("worker closed without a response")
+    if len(line) >= MAX_WORKER_LINE_BYTES and not line.endswith("\n"):
+        raise RuntimeError(f"worker response exceeds {MAX_WORKER_LINE_BYTES} bytes")
     try:
         resp = json.loads(line)
     except json.JSONDecodeError as e:

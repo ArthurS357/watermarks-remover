@@ -19,6 +19,7 @@ from typing import Any
 from common import (
     c2patool_probe_note,
     classify_finding_confidence,
+    guard_file_size,
     safe_arg,
     safe_write_bytes,
     safe_write_text,
@@ -1190,6 +1191,46 @@ def _prune_opf_manifest(raw: bytes, opf_name: str, dropped: set[str]) -> tuple[b
     return new.encode("utf-8"), removed[0]
 
 
+def _clean_embedded_media_member(raw: bytes, name: str, actions: list[str]) -> bytes:
+    """Strip metadata from one embedded raster/vector media zip member.
+
+    Shared by the OOXML (_scrub_ooxml_zip) and EPUB (clean_epub) media
+    loops, which previously carried this dispatch-and-fallback block twice,
+    identically apart from a local variable name. Appends a summary action
+    on success. On failure (the format-specific stripper raised), returns
+    *raw* unchanged and appends an EMBEDDED_MEDIA_CLEAN_FAILED action -- see
+    clean_container's audit_incomplete, which reads that sentinel back.
+    """
+    low = name.lower()
+    img_fmt = detect_image_format(raw)
+    cleaned = raw
+    sub_actions: list[str] = []
+    try:
+        if img_fmt == "png":
+            cleaned, sub_actions = strip_png(raw, strip_all_text=True)
+        elif img_fmt == "jpeg":
+            cleaned, sub_actions = strip_jpeg(raw, strip_all_app=True)
+        elif img_fmt == "webp":
+            cleaned, sub_actions = strip_webp(raw, strip_all_metadata=True)
+        elif img_fmt in ("avif", "heic"):
+            cleaned, sub_actions = strip_isobmff(raw, img_fmt, strip_all_metadata=True)
+        elif img_fmt == "gif":
+            cleaned, sub_actions = strip_gif(raw, strip_all_metadata=True)
+        elif img_fmt == "bmp":
+            cleaned, sub_actions = strip_bmp(raw, strip_all_metadata=True)
+        elif img_fmt == "tiff":
+            cleaned, sub_actions = strip_tiff(raw, strip_all_metadata=True)
+        elif low.endswith(".svg") or raw.lstrip().startswith(b"<"):
+            cleaned, sub_actions = clean_svg(raw)
+    except Exception:
+        actions.append(f"{EMBEDDED_MEDIA_CLEAN_FAILED} {name} kept as-is")
+        return raw
+    if any("drop" in a.lower() for a in sub_actions) and cleaned != raw:
+        actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
+        return cleaned
+    return raw
+
+
 def _scrub_ooxml_zip(
     data: bytes, fmt: str, *, also_layer_a_text: bool = True
 ) -> tuple[bytes, list[str]]:
@@ -1210,35 +1251,7 @@ def _scrub_ooxml_zip(
                 name,
                 re.I,
             ):
-                img_fmt = detect_image_format(raw)
-                sub_actions: list[str] = []
-                cleaned_bytes = raw
-                try:
-                    if img_fmt == "png":
-                        cleaned_bytes, sub_actions = strip_png(raw, strip_all_text=True)
-                    elif img_fmt == "jpeg":
-                        cleaned_bytes, sub_actions = strip_jpeg(raw, strip_all_app=True)
-                    elif img_fmt == "webp":
-                        cleaned_bytes, sub_actions = strip_webp(raw, strip_all_metadata=True)
-                    elif img_fmt in ("avif", "heic"):
-                        cleaned_bytes, sub_actions = strip_isobmff(
-                            raw, img_fmt, strip_all_metadata=True
-                        )
-                    elif img_fmt == "gif":
-                        cleaned_bytes, sub_actions = strip_gif(raw, strip_all_metadata=True)
-                    elif img_fmt == "bmp":
-                        cleaned_bytes, sub_actions = strip_bmp(raw, strip_all_metadata=True)
-                    elif img_fmt == "tiff":
-                        cleaned_bytes, sub_actions = strip_tiff(raw, strip_all_metadata=True)
-                    elif name.lower().endswith(".svg") or raw.lstrip().startswith(b"<"):
-                        cleaned_bytes, sub_actions = clean_svg(raw)
-                except Exception:
-                    # Kept as-is, watermark intact -- record the failure
-                    # rather than silently reading as nothing-to-clean.
-                    actions.append(f"{EMBEDDED_MEDIA_CLEAN_FAILED} {name} kept as-is")
-                if any("drop" in a.lower() for a in sub_actions) and cleaned_bytes != raw:
-                    actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
-                    raw = cleaned_bytes
+                raw = _clean_embedded_media_member(raw, name, actions)
                 kept.append((info, raw))
                 continue
 
@@ -1688,33 +1701,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
 
             # 1. Embedded raster / vector media: strip metadata
             if _EPUB_MEDIA_RE.search(low):
-                img_fmt = detect_image_format(raw)
-                sub_actions: list[str] = []
-                cleaned = raw
-                try:
-                    if img_fmt == "png":
-                        cleaned, sub_actions = strip_png(raw, strip_all_text=True)
-                    elif img_fmt == "jpeg":
-                        cleaned, sub_actions = strip_jpeg(raw, strip_all_app=True)
-                    elif img_fmt == "webp":
-                        cleaned, sub_actions = strip_webp(raw, strip_all_metadata=True)
-                    elif img_fmt in ("avif", "heic"):
-                        cleaned, sub_actions = strip_isobmff(raw, img_fmt, strip_all_metadata=True)
-                    elif img_fmt == "gif":
-                        cleaned, sub_actions = strip_gif(raw, strip_all_metadata=True)
-                    elif img_fmt == "bmp":
-                        cleaned, sub_actions = strip_bmp(raw, strip_all_metadata=True)
-                    elif img_fmt == "tiff":
-                        cleaned, sub_actions = strip_tiff(raw, strip_all_metadata=True)
-                    elif low.endswith(".svg") or raw.lstrip().startswith(b"<"):
-                        cleaned, sub_actions = clean_svg(raw)
-                except Exception:
-                    # Kept as-is, watermark intact -- record the failure
-                    # rather than silently reading as nothing-to-clean.
-                    actions.append(f"{EMBEDDED_MEDIA_CLEAN_FAILED} {name} kept as-is")
-                if any("drop" in a.lower() for a in sub_actions) and cleaned != raw:
-                    actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
-                    raw = cleaned
+                raw = _clean_embedded_media_member(raw, name, actions)
                 kept.append((info, raw))
                 continue
 
@@ -1952,6 +1939,7 @@ def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
 
 
 def inspect_container(path: Path) -> ContainerInspectReport:
+    guard_file_size(path)
     data = path.read_bytes()
     fmt = detect_container_format(path, data)
     tools: dict[str, Any] = {}
@@ -2074,6 +2062,7 @@ def clean_container(
     """
     from text_unicode import clean_text  # local import to avoid cycles
 
+    guard_file_size(path)
     data = path.read_bytes()
     fmt = fmt or detect_container_format(path, data)
     actions: list[str] = []

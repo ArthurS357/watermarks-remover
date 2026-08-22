@@ -37,10 +37,12 @@ Security notes:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import itertools
 import json
 import os
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -56,6 +58,15 @@ from text_unicode import clean_text
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
 DEFAULT_CANDIDATES = 1
 DEFAULT_MAX_LOOPS = 1
+
+# Cap on a rewrite backend's HTTP response body. A misbehaving or malicious
+# endpoint (reachable at all only after the loopback/--allow-remote checks
+# above) could otherwise return an unbounded body and exhaust memory. Sized
+# above MAX_INPUT_BYTES in common.py (the largest input this tool accepts)
+# since a response can legitimately echo back several rewrite candidates.
+MAX_REWRITE_RESPONSE_BYTES = int(
+    os.environ.get("WATERMARKS_REWRITE_MAX_RESPONSE_BYTES", str(64 << 20))
+)
 
 PROMPTS = {
     "paraphrase": (
@@ -157,12 +168,56 @@ def _env_int(name: str, default: int) -> int:
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
+def _refuse_non_global_addresses(host: str, port: int) -> None:
+    """Resolve *host* and refuse if any address is not publicly routable.
+
+    Closes the gap left by a bare hostname allowlist: --allow-remote is meant
+    for a legitimate off-machine LLM API, not a pivot into the private
+    network or cloud instance metadata (169.254.169.254) that a crafted or
+    compromised WATERMARKS_REWRITE_BASE_URL could point at. Same approach as
+    audit_website.py's _resolve_public_addresses.
+
+    This is a check-time resolution, not a connection pinned to the
+    validated address -- a DNS answer that changes between this check and
+    the actual request (DNS rebinding) is not defended against here.
+    """
+    try:
+        addr = ipaddress.ip_address(host.split("%", 1)[0])
+        infos_hosts = [str(addr)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise SystemExit(
+                f"error: cannot resolve rewrite base URL host {host!r}: {exc}"
+            ) from None
+        infos_hosts = [str(info[4][0]).split("%", 1)[0] for info in infos]
+
+    for raw in infos_hosts:
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        mapped = getattr(address, "ipv4_mapped", None)
+        if mapped is not None:
+            address = mapped
+        if not address.is_global:
+            raise SystemExit(
+                f"error: rewrite base URL host {host!r} resolves to a non-public "
+                f"address ({address}); refusing to send content there. This blocks "
+                "private/link-local/loopback ranges and cloud instance metadata "
+                "even with --allow-remote set."
+            )
+
+
 def _check_remote(base_url: str, allow_remote: bool) -> None:
     """Enforce the rewrite-endpoint allowlist.
 
     Default-deny: only loopback endpoints are accepted. Anything else requires
     an explicit opt-in (--allow-remote / WATERMARKS_REWRITE_ALLOW_REMOTE=1),
-    and non-http(s) schemes (e.g. file://) are always refused.
+    and non-http(s) schemes (e.g. file://) are always refused. Once opted in,
+    the resolved address itself still can't be private/link-local/metadata --
+    see _refuse_non_global_addresses.
     """
     u = urlparse(base_url)
     if u.scheme not in ("http", "https"):
@@ -178,6 +233,8 @@ def _check_remote(base_url: str, allow_remote: bool) -> None:
             f"('{host}'); refusing to send content off-machine. "
             "Set WATERMARKS_REWRITE_ALLOW_REMOTE=1 or pass --allow-remote to override."
         )
+    port = u.port or (443 if u.scheme == "https" else 80)
+    _refuse_non_global_addresses(host, port)
     eprint(
         f"warning: rewrite base URL host is '{host}' (not localhost); "
         "content will leave this machine"
@@ -282,7 +339,19 @@ def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float)
     )
     opener = urllib.request.build_opener(_NoRedirect())
     with opener.open(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = resp.read(1 << 16)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_REWRITE_RESPONSE_BYTES:
+                raise ValueError(
+                    f"rewrite backend response exceeds {MAX_REWRITE_RESPONSE_BYTES} bytes"
+                )
+            chunks.append(chunk)
+        return json.loads(b"".join(chunks).decode("utf-8"))
 
 
 def call_ollama(base_url: str, model: str, prompt: str, timeout: float, temperature: float) -> str:

@@ -469,7 +469,13 @@ def test_check_remote_denies_non_loopback_without_opt_in():
         _check_remote("http://example.com:11434", allow_remote=False)
 
 
-def test_check_remote_allows_non_loopback_with_opt_in(capsys):
+def test_check_remote_allows_non_loopback_with_opt_in(capsys, monkeypatch):
+    # Mocked so the test doesn't depend on live DNS/network access.
+    monkeypatch.setattr(
+        rewrite_text.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
     _check_remote("http://example.com:11434", allow_remote=True)
     err = capsys.readouterr().err
     assert "content will leave this machine" in err
@@ -480,6 +486,29 @@ def test_check_remote_denies_non_http_scheme():
         _check_remote("file:///etc/passwd", allow_remote=True)
 
 
+def test_check_remote_denies_hostname_resolving_to_private_address(monkeypatch):
+    # --allow-remote opts into *a* remote endpoint, not a pivot into the
+    # private network or cloud instance metadata via a crafted/compromised
+    # WATERMARKS_REWRITE_BASE_URL hostname.
+    monkeypatch.setattr(
+        rewrite_text.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(None, None, None, None, ("169.254.169.254", 0))],
+    )
+    with pytest.raises(SystemExit, match="non-public"):
+        _check_remote("http://metadata.internal", allow_remote=True)
+
+
+def test_check_remote_allows_opt_in_with_literal_public_ip(capsys):
+    _check_remote("http://93.184.216.34:11434", allow_remote=True)
+    assert "content will leave this machine" in capsys.readouterr().err
+
+
+def test_check_remote_denies_opt_in_with_literal_private_ip():
+    with pytest.raises(SystemExit, match="non-public"):
+        _check_remote("http://10.0.0.5:11434", allow_remote=True)
+
+
 def test_flag_env(monkeypatch):
     assert not _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
     monkeypatch.setenv("WATERMARKS_REWRITE_ALLOW_REMOTE", "1")
@@ -488,6 +517,36 @@ def test_flag_env(monkeypatch):
     assert _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
     monkeypatch.setenv("WATERMARKS_REWRITE_ALLOW_REMOTE", "0")
     assert not _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
+
+
+def test_http_json_caps_response_size(monkeypatch):
+    # A misbehaving or malicious rewrite backend must not be able to exhaust
+    # memory via an unbounded response body.
+    monkeypatch.setattr(rewrite_text, "MAX_REWRITE_RESPONSE_BYTES", 16)
+
+    class Oversized(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"padding": "' + b"x" * 64 + b'"}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Oversized)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(ValueError, match="exceeds"):
+            rewrite_text._http_json(
+                f"http://127.0.0.1:{server.server_address[1]}",
+                {},
+                {},
+                timeout=5,
+            )
+    finally:
+        server.shutdown()
 
 
 def test_openai_compatible_sends_reasoning_effort_when_set():

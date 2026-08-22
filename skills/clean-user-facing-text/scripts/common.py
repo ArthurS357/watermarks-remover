@@ -14,17 +14,33 @@ MAX_STDIN_BYTES = int(os.environ.get("WATERMARKS_MAX_STDIN_BYTES", str(64 << 20)
 BINARY_SNIFF_BYTES = 8192
 
 BINARY_MAGIC: tuple[tuple[bytes, str], ...] = (
-    (b"PK\x03\x04", "a ZIP container such as DOCX or ODT"),
+    (b"PK\x03\x04", "a ZIP container (DOCX, ODT, XLSX, PPTX, EPUB, JAR)"),
+    (b"PK\x05\x06", "an empty ZIP container"),
+    (b"PK\x07\x08", "a spanned ZIP container"),
     (b"%PDF-", "a PDF"),
     (b"\x89PNG\r\n\x1a\n", "a PNG image"),
     (b"\xff\xd8\xff", "a JPEG image"),
     (b"GIF87a", "a GIF image"),
     (b"GIF89a", "a GIF image"),
-    (b"RIFF", "a RIFF container"),
+    (b"BM", "a BMP image"),
+    (b"II*\x00", "a TIFF image"),
+    (b"MM\x00*", "a TIFF image"),
+    (b"RIFF", "a RIFF container (WEBP, WAV, AVI)"),
+    (b"OggS", "an Ogg media file"),
     (b"\x1f\x8b", "a gzip archive"),
+    (b"BZh", "a bzip2 archive"),
+    (b"\xfd7zXZ\x00", "an xz archive"),
     (b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive"),
     (b"Rar!\x1a\x07", "a RAR archive"),
     (b"\x7fELF", "an ELF binary"),
+    (b"\xca\xfe\xba\xbe", "a Java class or Mach-O fat binary"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "a legacy Office document (.doc, .xls, .ppt)"),
+    (b"SQLite format 3\x00", "a SQLite database"),
+    (b"8BPS", "a Photoshop document"),
+    (b"wOFF", "a WOFF font"),
+    (b"wOF2", "a WOFF2 font"),
+    (b"\x00\x01\x00\x00\x00", "a TrueType font"),
+    (b"OTTO", "an OpenType font"),
 )
 
 _ALLOWED_CONTROLS = frozenset({0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1B})

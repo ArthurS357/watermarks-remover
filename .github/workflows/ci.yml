@@ -13,21 +13,35 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        # 3.12: the floor README documents ("Python 3.10+"). 3.14: what
+        # service/Dockerfile actually ships (python:3.14-slim) -- CI
+        # previously never ran the suite on the interpreter version
+        # production actually uses.
+        python-version: ["3.12", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install test deps
         run: python -m pip install -r requirements-dev.txt
 
       - name: Test
-        run: python -m pytest -q
+        # Coverage is reported, not gated: a real local measurement came out
+        # to ~72%, well under an 80% bar, largely because several CLI entry
+        # points (clean_text.py, inspect_file.py, score_synthid.py, ...) are
+        # exercised via subprocess in the smoke/CLI tests, which coverage.py
+        # does not see without separate subprocess-coverage wiring
+        # (COVERAGE_PROCESS_START + sitecustomize.py). Adding --cov-fail-
+        # under=80 now would fail every future CI run on a number that
+        # doesn't reflect real coverage. Fix the measurement gap first, then
+        # gate on the corrected number.
+        run: python -m pytest -q --cov=service/scripts --cov-report=term-missing
 
       - name: Validate OpenAPI spec
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
         run: |
           python -c "import sys; sys.path.insert(0, 'service/scripts'); import server; from openapi_spec_validator import validate; validate(server.openapi_spec())"
 
@@ -55,7 +69,7 @@ jobs:
           if ($ps1 -notmatch 'cuda\.is_available\(\)') { Write-Error 'post-install CUDA verification missing'; exit 1 }
 
       - name: Audit dependencies (pip-audit)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
         run: |
           python -m pip_audit -r requirements-dev.txt \
             -r service/scripts/requirements-synthid-scorer.txt

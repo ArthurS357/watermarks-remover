@@ -32,10 +32,13 @@ updates:
       day: "monday"
     open-pull-requests-limit: 10
 
-  # Docker base image (Dockerfile.synthid): tracks the digest-pinned
-  # python:3.11-slim base. Monthly — digest churn is low-signal weekly.
+  # Docker base images: tracks the digest-pinned python:*-slim bases across
+  # every Dockerfile in service/ (Dockerfile, Dockerfile.ctrlregen,
+  # Dockerfile.markllm, Dockerfile.markdiffusion, Dockerfile.synthid).
+  # Monthly — digest churn is low-signal weekly. directory was "/" before,
+  # which never matched (no Dockerfile lives at the repo root).
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/service"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5

@@ -12,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from format_dispatch import classify_bytes
 from image_meta import (
+    _collect_tiff_sub_ifd_drops,
     clean_image,
     detect_format,
     inspect_bmp,
@@ -402,3 +403,34 @@ def test_tiff_roundtrip(tmp_path: Path):
     rep = inspect_image(dest)
     assert rep.format == "tiff"
     assert rep.has_ai_metadata is False
+
+
+def test_collect_tiff_sub_ifd_drops_handles_deep_chain_without_recursion_error():
+    # A crafted TIFF can chain many distinct (non-cyclic) sub-IFD pointers.
+    # The old recursive implementation would blow Python's default recursion
+    # limit on a chain this deep; the iterative worklist must not.
+    off_fmt = "<I"
+    off_len = 4
+    depth = sys.getrecursionlimit() + 500
+
+    ifds: dict[int, dict] = {}
+    for i in range(depth):
+        next_ptr = i + 1 if i + 1 < depth else 0
+        entries = []
+        if next_ptr:
+            entries.append(
+                {
+                    "tag": 34665,
+                    "value": struct.pack(off_fmt, next_ptr),
+                    "value_offset": None,
+                    "byte_size": 0,
+                }
+            )
+        ifds[i] = {"entries": entries, "block_len": 10}
+
+    drop_ranges: list = []
+    drop_ifd_ranges: list = []
+    _collect_tiff_sub_ifd_drops(
+        off_fmt, off_len, ifds, 1 << 20, 0, drop_ranges, drop_ifd_ranges, set()
+    )
+    assert len(drop_ifd_ranges) == depth

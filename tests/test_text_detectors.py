@@ -241,6 +241,34 @@ def test_markllm_detector_worker_fallback_to_subprocess(monkeypatch, tmp_path):
     assert len(calls) == 1  # fell back to the subprocess
 
 
+def test_detect_via_worker_caps_response_size(monkeypatch):
+    import socketserver
+    import threading
+
+    # A resident worker that never sends a newline must not grow the read
+    # buffer without bound; cap small so the test stays fast.
+    monkeypatch.setattr(text_detectors, "MAX_WORKER_LINE_BYTES", 16)
+
+    class _H(socketserver.BaseRequestHandler):
+        def handle(self):
+            f = self.request.makefile("r", encoding="utf-8")
+            f.readline()
+            self.request.sendall(b"x" * 64)  # exceeds the cap, no newline
+
+    class _S(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    srv = _S(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(RuntimeError, match="exceeds"):
+            text_detectors._detect_via_worker(srv.server_address[1], "hello", timeout=5)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_run_all_text_detectors_can_exclude_markllm(monkeypatch):
     monkeypatch.setattr(
         text_detectors,

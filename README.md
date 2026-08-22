@@ -77,7 +77,7 @@ a deterministic pre-send filter for final chat responses.
 
 ### Start the service
 
-The fastest path is a local HTTP server (Python 3.10+ stdlib only — no deps, no Docker):
+The fastest path is a local HTTP server (Python 3.12+ stdlib only — no deps, no Docker):
 
 ```bash
 make serve                 # http://127.0.0.1:8765
@@ -99,7 +99,8 @@ Optional system tools (auto-used when present — preinstalled in the core Docke
 | [`exiftool`](https://exiftool.org/) | Residual metadata strip (esp. **PDF**) |
 | [`qpdf`](https://qpdf.sourceforge.io/) | Structural PDF rebuild — **required** for a real PDF strip (see below) |
 
-Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional.
+Core scripts need **Python 3.12+** stdlib only (CI tests 3.12 and 3.14, the
+version `service/Dockerfile` ships). Layer B model calls are optional.
 
 ## Quick use (scripts)
 

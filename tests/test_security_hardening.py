@@ -20,6 +20,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import common
 import container_meta
+import image_meta
 from common import (
     backup_path,
     read_text_input,
@@ -232,6 +233,72 @@ def test_read_text_input_refuses_oversized_file(tmp_path: Path, monkeypatch):
     big.write_text("x" * 64)
     with pytest.raises(SystemExit):
         read_text_input(str(big))
+
+
+# ---------------------------------------------------------------------------
+# guard_file_size: inspect_image/clean_image/inspect_container/clean_container
+# read a whole file via path.read_bytes() with no size check of their own
+# (unlike the CLI entry points, which already guard MAX_INPUT_BYTES before
+# calling into the library). This is defense-in-depth for direct/library
+# callers, e.g. a future HTTP handler that skips the CLI layer entirely.
+# ---------------------------------------------------------------------------
+
+
+def test_guard_file_size_refuses_oversized_file(tmp_path: Path):
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * 100)
+    with pytest.raises(ValueError, match="refusing input larger"):
+        common.guard_file_size(big, max_bytes=50)
+
+
+def test_guard_file_size_allows_file_under_cap(tmp_path: Path):
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"x" * 10)
+    common.guard_file_size(small, max_bytes=50)  # must not raise
+
+
+def test_inspect_image_is_guarded_by_file_size(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        image_meta, "guard_file_size", lambda *a, **kw: (_ for _ in ()).throw(ValueError("cap"))
+    )
+    f = tmp_path / "shot.png"
+    f.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(ValueError, match="cap"):
+        image_meta.inspect_image(f)
+
+
+def test_clean_image_is_guarded_by_file_size(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        image_meta, "guard_file_size", lambda *a, **kw: (_ for _ in ()).throw(ValueError("cap"))
+    )
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(ValueError, match="cap"):
+        image_meta.clean_image(src, tmp_path / "out.png")
+
+
+def test_inspect_container_is_guarded_by_file_size(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        container_meta,
+        "guard_file_size",
+        lambda *a, **kw: (_ for _ in ()).throw(ValueError("cap")),
+    )
+    f = tmp_path / "note.md"
+    f.write_text("hello")
+    with pytest.raises(ValueError, match="cap"):
+        container_meta.inspect_container(f)
+
+
+def test_clean_container_is_guarded_by_file_size(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        container_meta,
+        "guard_file_size",
+        lambda *a, **kw: (_ for _ in ()).throw(ValueError("cap")),
+    )
+    src = tmp_path / "note.md"
+    src.write_text("hello")
+    with pytest.raises(ValueError, match="cap"):
+        container_meta.clean_container(src, tmp_path / "out.md", fmt="markdown")
 
 
 def test_read_stdin_capped(tmp_path: Path, monkeypatch):

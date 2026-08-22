@@ -44,6 +44,25 @@ services:
     init: true
     user: "10001:10001"
     restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Sized against server.py's own defaults: up to
+    # WATERMARKS_MAX_CONCURRENT_REQUESTS (default 4) POST requests can each
+    # briefly hold well over MAX_BODY_BYTES (~384 MiB) worth of copies of
+    # their payload in memory at once. Raise together with
+    # WATERMARKS_MAX_CONCURRENT_REQUESTS / WATERMARKS_MAX_INPUT_BYTES if
+    # more throughput is needed; a tight limit here without raising it would
+    # OOM-kill legitimate concurrent load rather than an actual runaway
+    # process.
+    mem_limit: 4g
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   wr-markllm:
     profiles: [harness]

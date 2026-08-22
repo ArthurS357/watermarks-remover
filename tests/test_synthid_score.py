@@ -190,3 +190,33 @@ def test_inspect_report_to_dict_includes_synthid():
         has_ai_metadata=False,
     )
     assert empty.to_dict()["synthid"] is None
+
+
+def test_summarize_stderr_returns_only_first_line(capsys):
+    # A multi-line traceback (e.g. containing a container-internal path)
+    # must not reach the HTTP client wholesale; only the first line does,
+    # and the full text still goes to the server's own log.
+    stderr = 'RuntimeError: model load failed\n  File "/opt/reverse-synthid/score.py", line 42\n'
+    result = image_meta._summarize_stderr(stderr)
+    assert result == "RuntimeError: model load failed"
+    assert "/opt/reverse-synthid/score.py" not in result
+    assert "/opt/reverse-synthid/score.py" in capsys.readouterr().err
+
+
+def test_summarize_stderr_caps_length():
+    result = image_meta._summarize_stderr("x" * 5000)
+    assert len(result) == 300
+
+
+def test_summarize_stderr_uses_fallback_when_empty():
+    assert image_meta._summarize_stderr("", fallback="no output") == "no output"
+    assert image_meta._summarize_stderr(None, fallback="no output") == "no output"
+
+
+def test_synthid_score_http_read_error_omits_full_path(tmp_path):
+    missing = tmp_path / "deeply" / "nested" / "server-temp-dir" / "shot.png"
+    result = image_meta._synthid_score_http(missing, "http://127.0.0.1:8766", "", 5.0)
+    assert result["available"] is False
+    assert "shot.png" in result["error"]
+    assert str(tmp_path) not in result["error"]
+    assert "server-temp-dir" not in result["error"]

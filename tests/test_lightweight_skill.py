@@ -174,3 +174,30 @@ def test_lightweight_preserves_egyptian_format_controls():
         check=True,
     )
     assert result.stdout.rstrip("\n") == "ab"
+
+
+def _load_module(name: str, path: Path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_skill_binary_magic_matches_service_binary_magic():
+    # common.py is a deliberate fork (the skill has no need for the
+    # service's exiftool/c2patool/subprocess helpers), so it isn't kept
+    # byte-identical like text_unicode.py -- but the BINARY_MAGIC table both
+    # copies carry should still cover the same formats. A gap here means a
+    # file type the service refuses to mangle as text can slip past the
+    # skill's guard undetected.
+    service_common = _load_module("service_common", ROOT / "service" / "scripts" / "common.py")
+    skill_common = _load_module("skill_common", SKILL / "scripts" / "common.py")
+    service_magic = {magic for magic, _label in service_common.BINARY_MAGIC}
+    skill_magic = {magic for magic, _label in skill_common.BINARY_MAGIC}
+    assert skill_magic == service_magic, (
+        f"skill common.py BINARY_MAGIC is missing: {service_magic - skill_magic}, "
+        f"or has extra: {skill_magic - service_magic}"
+    )

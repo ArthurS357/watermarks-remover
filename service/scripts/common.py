@@ -152,6 +152,24 @@ def guard_binary(
     raise SystemExit(2)
 
 
+def guard_file_size(path: str | Path, max_bytes: int = MAX_INPUT_BYTES) -> None:
+    """Refuse a file over *max_bytes* before a caller reads it whole into memory.
+
+    ValueError, not SystemExit: guard_binary's SystemExit is fine from a CLI
+    entry point but would escape server.py's request handling entirely
+    (SystemExit is not a subclass of Exception) if raised from a library
+    function reachable over HTTP. Every CLI entry point already enforces its
+    own MAX_INPUT_BYTES check before calling into the library, so this is
+    defense-in-depth for direct/library callers of inspect_image,
+    clean_image, inspect_container and clean_container, which read a whole
+    file via path.read_bytes() with no size check of their own.
+    """
+    p = Path(path)
+    size = p.stat().st_size
+    if size > max_bytes:
+        raise ValueError(f"refusing input larger than {max_bytes} bytes: {size} bytes")
+
+
 def read_text_input(
     path: str | None,
     *,

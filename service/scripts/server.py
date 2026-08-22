@@ -48,7 +48,7 @@ from functools import cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -84,13 +84,22 @@ MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
 MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
 
 # ThreadingHTTPServer spawns one thread per connection with no cap of its own.
-# Each in-flight POST can hold up to MAX_BODY_BYTES of decoded request body in
-# memory at once; an unbounded number of concurrent uploads is a memory-DoS.
-# Bounded to a fixed number of concurrently *processed* POST requests -- a
-# request that cannot acquire a slot gets 503 immediately rather than piling
-# up. GET (/health, /capabilities, /openapi.json) never decodes a body, so it
-# is not gated.
-MAX_CONCURRENT_REQUESTS = int(os.environ.get("WATERMARKS_MAX_CONCURRENT_REQUESTS", "16"))
+# Each in-flight POST can briefly hold several copies of its payload in
+# memory at once -- the raw JSON body (up to MAX_BODY_BYTES, ~1.5x
+# MAX_INPUT_BYTES), the base64-decoded file, and a cleaned/output copy during
+# processing -- so worst case is well over MAX_BODY_BYTES per request, not
+# just MAX_BODY_BYTES itself. Bounded to a fixed number of concurrently
+# *processed* POST requests -- a request that cannot acquire a slot gets 503
+# immediately rather than piling up. GET (/health, /capabilities,
+# /openapi.json) never decodes a body, so it is not gated.
+#
+# Default of 4 (not the request/thread-level default a naive "one slot per
+# CPU-ish" guess would pick) is sized against MAX_INPUT_BYTES's own default
+# (256 MiB): 4 concurrent requests keeps the worst case in the low single-
+# digit GB, which fits compose.yaml's wr-core mem_limit. Raise both
+# WATERMARKS_MAX_CONCURRENT_REQUESTS and the container's mem_limit together
+# if higher throughput is needed on a host with the memory to back it.
+MAX_CONCURRENT_REQUESTS = int(os.environ.get("WATERMARKS_MAX_CONCURRENT_REQUESTS", "4"))
 _REQUEST_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
 
 # Seconds a connection may sit idle (no request line/headers/body sent) before
@@ -683,7 +692,37 @@ def _batch_items(
     return items
 
 
-def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]:
+# TypedDicts document the stable outer envelope of each HTTP response --
+# the shape the OpenAPI spec above and SKILL.md's endpoint table already
+# promise callers. `report`/`detections` stay dict[str, Any]/
+# list[dict[str, Any]] rather than being typed further: their actual shape
+# varies by `kind` (text/image/container/av each have a different report
+# schema, see inspect_image/inspect_container/etc.'s own dataclasses), and a
+# faithful static type for that would need a discriminated union keyed on
+# `kind` -- a much larger effort than this envelope-level contract needs.
+# Not enforced by CI (no mypy step exists yet); read as documentation.
+class InspectPayload(TypedDict):
+    ok: bool
+    kind: str
+    report: dict[str, Any]
+    suspicious: bool
+
+
+class DetectPayload(TypedDict):
+    ok: bool
+    kind: str
+    detections: list[dict[str, Any]]
+    report: NotRequired[dict[str, Any]]  # only present for av/container kinds
+
+
+class CleanPayload(TypedDict):
+    ok: bool
+    kind: str
+    cleaned: str
+    report: dict[str, Any]
+
+
+def _inspect_payload(data: bytes, name: str, run_detect: bool) -> InspectPayload:
     kind = classify_bytes(data, Path(name).suffix)
     if kind == "unknown":
         return {
@@ -725,7 +764,7 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
     return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
 
 
-def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
+def _detect_payload(data: bytes, name: str) -> DetectPayload:
     kind = classify_bytes(data, Path(name).suffix)
     with tempfile.TemporaryDirectory(prefix="wm-detect-") as tmp:
         path = _tmp_path(Path(tmp), name or "input")
@@ -773,7 +812,7 @@ def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
             }
 
 
-def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str, Any]:
+def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> CleanPayload:
     kind = classify_bytes(data, Path(name).suffix)
     if kind == "unknown":
         raise ValueError(

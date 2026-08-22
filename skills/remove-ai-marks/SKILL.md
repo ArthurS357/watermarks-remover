@@ -77,11 +77,24 @@ field and writes it to the output path itself.
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
+| POST | `/inspect/batch` | `{"files": [{"file": "<base64>", "name": "..."}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "suspicious", "report"}, ...]}` |
+| POST | `/detect/batch` | `{"files": [{"file": "<base64>", "name": "..."}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "detections"}, ...]}` |
+| POST | `/clean/batch` | `{"files": [{"file": "<base64>", "name": "...", "options": {...}}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "cleaned", "report"}, ...]}` |
 
 `/clean` and `/inspect` route by the uploaded `name` extension plus the bytes;
 unrecognized formats answer `kind: "unknown"` (`/inspect`) or 400 (`/clean`).
 When writing a temp file for pasted text, keep a known extension (`.txt` /
 `.md`) in the `name` you send.
+
+**Cleaning 2+ files? Use the `/batch` variant, not N single-file calls.** One
+request instead of N round-trips of base64 encode/decode. Each `options`
+object is per-file, so a batch can mix a text file's `nfkc` with an image's
+`remove_pixel` in the same call. Capped at `WATERMARKS_MAX_BATCH_FILES`
+entries (default 50; check `/capabilities` if unsure) — split a larger set
+into several batch calls. A per-file failure (bad base64, unrecognized
+format) shows up as that entry's `"ok": false` with an `"error"` string and
+never aborts the rest of the batch, so always check each result's own `ok`
+rather than only the top-level one.
 
 The machine-readable contract lives at `$WM/openapi.json` — plug it into any
 OpenAPI tooling (client generators, Swagger UI, editors) instead of hand-rolling

@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 from common import (
     c2patool_probe_note,
     classify_finding_confidence,
+    eprint,
+    guard_file_size,
     safe_arg,
     safe_write_bytes,
     subprocess_preexec_fn,
@@ -31,6 +33,23 @@ from common import (
 )
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
+
+
+def _summarize_stderr(stderr: str | None, fallback: str = "") -> str:
+    """A short, client-safe summary of a subprocess's stderr.
+
+    The full text can include local filesystem paths (container temp/venv
+    layout), environment values, or a full traceback -- useful for an
+    operator watching container logs, not for an HTTP API response. Logs the
+    full text and returns only its first line, capped well short of the
+    2000-char raw dump this replaces.
+    """
+    text = (stderr or "").strip()
+    if not text:
+        return fallback
+    eprint(f"subprocess stderr (full): {text}")
+    return text.splitlines()[0][:300]
+
 
 # Optional HTTP SynthID scorer sidecar (synthid_score_server.py). When
 # WATERMARKS_SYNTHID_SCORER_URL is set, run_synthid_score calls the sidecar
@@ -1168,23 +1187,31 @@ def _collect_tiff_sub_ifd_drops(
     drop_ifd_ranges: list[tuple[int, int]],
     seen: set[int],
 ) -> None:
-    """Record the region and value payloads of a dropped sub-IFD chain."""
-    sub = ifds.get(ptr)
-    if sub is None or ptr in seen:
-        return
-    seen.add(ptr)
-    drop_ifd_ranges.append((ptr, min(ptr + sub["block_len"] + off_len, data_len)))
-    for ent in sub["entries"]:
-        if ent["tag"] in (34665, 34853):
-            p2 = struct.unpack(off_fmt, ent["value"][:off_len])[0]
-            if p2:
-                _collect_tiff_sub_ifd_drops(
-                    off_fmt, off_len, ifds, data_len, p2, drop_ranges, drop_ifd_ranges, seen
-                )
-        elif ent["value_offset"] is not None:
-            vo, vs = ent["value_offset"], ent["byte_size"]
-            if vo + vs <= data_len:
-                drop_ranges.append((vo, vo + vs))
+    """Record the region and value payloads of a dropped sub-IFD chain.
+
+    Iterative (explicit worklist), not recursive: a crafted TIFF can chain
+    up to MAX_TIFF_IFDS distinct sub-IFD pointers, deep enough to risk
+    RecursionError on Python's default recursion limit. The `seen` guard
+    already prevented infinite cycles; this only removes the depth risk from
+    a long acyclic chain.
+    """
+    todo = [ptr]
+    while todo:
+        p = todo.pop()
+        sub = ifds.get(p)
+        if sub is None or p in seen:
+            continue
+        seen.add(p)
+        drop_ifd_ranges.append((p, min(p + sub["block_len"] + off_len, data_len)))
+        for ent in sub["entries"]:
+            if ent["tag"] in (34665, 34853):
+                p2 = struct.unpack(off_fmt, ent["value"][:off_len])[0]
+                if p2:
+                    todo.append(p2)
+            elif ent["value_offset"] is not None:
+                vo, vs = ent["value_offset"], ent["byte_size"]
+                if vo + vs <= data_len:
+                    drop_ranges.append((vo, vo + vs))
 
 
 def strip_tiff(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, list[str]]:
@@ -1406,7 +1433,10 @@ def _synthid_score_http(
     try:
         data = path.read_bytes()
     except OSError as e:
-        return {"available": False, "error": f"cannot read {path}: {e}"}
+        # path.name only, and e.strerror over str(e): OSError's default
+        # __str__ re-embeds the full path, which for an HTTP caller is a
+        # server-side temp-directory layout leak, not useful diagnostic info.
+        return {"available": False, "error": f"cannot read {path.name}: {e.strerror or e}"}
     body = json.dumps({"file": base64.b64encode(data).decode("ascii")}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -1496,10 +1526,10 @@ def run_synthid_score(
     if r.returncode == 3:
         return {
             "available": False,
-            "error": (r.stderr or "SynthID scorer unavailable (exit 3)").strip()[:2000],
+            "error": _summarize_stderr(r.stderr, "SynthID scorer unavailable (exit 3)"),
         }
     if r.returncode != 0:
-        return {"available": False, "error": (r.stderr or "").strip()[:2000]}
+        return {"available": False, "error": _summarize_stderr(r.stderr)}
     try:
         return json.loads(r.stdout or "{}")
     except json.JSONDecodeError as e:
@@ -1598,7 +1628,7 @@ def run_markdiffusion_purify(
         return {"available": False, "error": str(e)}
 
     if r.returncode != 0:
-        return {"available": False, "error": (r.stderr or "").strip()[:2000]}
+        return {"available": False, "error": _summarize_stderr(r.stderr)}
     try:
         payload = json.loads(r.stdout or "{}")
     except json.JSONDecodeError as e:
@@ -1674,7 +1704,7 @@ def run_ctrlregen_clean(
         return {"available": False, "error": str(e)}
 
     if r.returncode != 0:
-        return {"available": False, "error": (r.stderr or "").strip()[:2000]}
+        return {"available": False, "error": _summarize_stderr(r.stderr)}
     try:
         payload = json.loads(r.stdout or "{}")
     except json.JSONDecodeError as e:
@@ -1687,6 +1717,7 @@ def inspect_image(
     path: Path,
     synthid_dir: str | None = None,
 ) -> ImageInspectReport:
+    guard_file_size(path)
     data = path.read_bytes()
     fmt = detect_format(data)
     if fmt == "png":
@@ -2004,6 +2035,120 @@ def strip_isobmff(
     return bytes(out), actions
 
 
+def _strip_image_metadata(
+    data: bytes, fmt: str, *, strip_all_metadata: bool
+) -> tuple[bytes, list[str]]:
+    """Dispatch to the format-specific metadata stripper."""
+    if fmt == "png":
+        return strip_png(data, strip_all_text=strip_all_metadata)
+    if fmt == "jpeg":
+        return strip_jpeg(data, strip_all_app=strip_all_metadata)
+    if fmt == "webp":
+        return strip_webp(data, strip_all_metadata=strip_all_metadata)
+    if fmt in ("avif", "heic"):
+        return strip_isobmff(data, fmt, strip_all_metadata=strip_all_metadata)
+    if fmt == "bmp":
+        return strip_bmp(data, strip_all_metadata=strip_all_metadata)
+    if fmt == "gif":
+        return strip_gif(data, strip_all_metadata=strip_all_metadata)
+    if fmt == "tiff":
+        return strip_tiff(data, strip_all_metadata=strip_all_metadata)
+    raise ValueError(f"unsupported format: {fmt}")
+
+
+def _run_exiftool_residual_pass(
+    dest: Path, actions: list[str], *, strip_all_metadata: bool
+) -> None:
+    """Best-effort exiftool pass over *dest* for tags the format stripper missed.
+
+    Appends to *actions* in place, matching clean_pdf's/_pdf_structural_rewrite's
+    convention elsewhere in this codebase, rather than returning a value the
+    caller has to merge.
+    """
+    exiftool = which("exiftool")
+    if not exiftool or not strip_all_metadata:
+        return
+    try:
+        subprocess.run(
+            [exiftool, "-all=", "-overwrite_original", safe_arg(str(dest))],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            preexec_fn=subprocess_preexec_fn,
+        )
+        actions.append("exiftool -all= pass")
+    except Exception as e:
+        actions.append(f"exiftool failed: {e}")
+
+
+def _run_pixel_removal(
+    dest: Path,
+    remove_pixel: str,
+    actions: list[str],
+    *,
+    ctrlregen_dir: str | None,
+    ctrlregen_strength: float,
+    ctrlregen_steps: int,
+    ctrlregen_device: str | None,
+    ctrlregen_seed: int | None,
+    ctrlregen_timeout: int,
+    markdiffusion_dir: str | None,
+    markdiffusion_strength: float,
+    markdiffusion_model: str | None,
+    markdiffusion_size: int,
+    markdiffusion_steps: int,
+    markdiffusion_device: str | None,
+    markdiffusion_timeout: int,
+) -> dict[str, Any]:
+    """Run the requested pixel-domain watermark remover on *dest* in place.
+
+    Appends a human-readable summary to *actions* either way -- available or
+    skipped-with-reason -- and returns the backend's own result dict.
+    """
+    if remove_pixel == "ctrlregen":
+        result = run_ctrlregen_clean(
+            dest,
+            dest,
+            upstream_dir=ctrlregen_dir,
+            strength=ctrlregen_strength,
+            steps=ctrlregen_steps,
+            device=ctrlregen_device,
+            seed=ctrlregen_seed,
+            timeout=ctrlregen_timeout,
+        )
+        if result.get("available"):
+            actions.append(f"CtrlRegen pixel removal (strength {ctrlregen_strength})")
+        else:
+            actions.append(
+                f"CtrlRegen pixel removal skipped: {result.get('error', 'unknown error')}"
+            )
+        return result
+    if remove_pixel == "diffusion":
+        result = run_markdiffusion_purify(
+            dest,
+            dest,
+            upstream_dir=markdiffusion_dir,
+            strength=markdiffusion_strength,
+            model=markdiffusion_model,
+            size=markdiffusion_size,
+            steps=markdiffusion_steps,
+            device=markdiffusion_device,
+            timeout=markdiffusion_timeout,
+        )
+        if result.get("available"):
+            actions.append(
+                f"DiffusionPurification pixel removal (strength {markdiffusion_strength})"
+            )
+        else:
+            actions.append(
+                "DiffusionPurification pixel removal skipped: "
+                f"{result.get('error', 'unknown error')}"
+            )
+        return result
+    raise ValueError(f"unknown pixel remover: {remove_pixel}")
+
+
 def clean_image(
     path: Path,
     dest: Path,
@@ -2025,91 +2170,35 @@ def clean_image(
     markdiffusion_device: str | None = None,
     markdiffusion_timeout: int = 3600,
 ) -> dict[str, Any]:
+    guard_file_size(path)
     synthid_before = run_synthid_score(path, synthid_dir)
     data = path.read_bytes()
     fmt = detect_format(data)
-    if fmt == "png":
-        cleaned, actions = strip_png(data, strip_all_text=strip_all_metadata)
-    elif fmt == "jpeg":
-        cleaned, actions = strip_jpeg(data, strip_all_app=strip_all_metadata)
-    elif fmt == "webp":
-        cleaned, actions = strip_webp(data, strip_all_metadata=strip_all_metadata)
-    elif fmt in ("avif", "heic"):
-        cleaned, actions = strip_isobmff(data, fmt, strip_all_metadata=strip_all_metadata)
-    elif fmt == "bmp":
-        cleaned, actions = strip_bmp(data, strip_all_metadata=strip_all_metadata)
-    elif fmt == "gif":
-        cleaned, actions = strip_gif(data, strip_all_metadata=strip_all_metadata)
-    elif fmt == "tiff":
-        cleaned, actions = strip_tiff(data, strip_all_metadata=strip_all_metadata)
-    else:
-        raise ValueError(f"unsupported format: {fmt}")
+    cleaned, actions = _strip_image_metadata(data, fmt, strip_all_metadata=strip_all_metadata)
 
-    # Optional exiftool pass for residual tags
     safe_write_bytes(dest, cleaned)
-    exiftool = which("exiftool")
-    if exiftool and strip_all_metadata:
-        try:
-            subprocess.run(
-                [
-                    exiftool,
-                    "-all=",
-                    "-overwrite_original",
-                    safe_arg(str(dest)),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-                preexec_fn=subprocess_preexec_fn,
-            )
-            actions.append("exiftool -all= pass")
-        except Exception as e:
-            actions.append(f"exiftool failed: {e}")
+    _run_exiftool_residual_pass(dest, actions, strip_all_metadata=strip_all_metadata)
 
     pixel_removal: dict[str, Any] | None = None
     if remove_pixel:
-        if remove_pixel == "ctrlregen":
-            pixel_removal = run_ctrlregen_clean(
-                dest,
-                dest,
-                upstream_dir=ctrlregen_dir,
-                strength=ctrlregen_strength,
-                steps=ctrlregen_steps,
-                device=ctrlregen_device,
-                seed=ctrlregen_seed,
-                timeout=ctrlregen_timeout,
-            )
-            if pixel_removal.get("available"):
-                actions.append(f"CtrlRegen pixel removal (strength {ctrlregen_strength})")
-            else:
-                actions.append(
-                    "CtrlRegen pixel removal skipped: "
-                    f"{pixel_removal.get('error', 'unknown error')}"
-                )
-        elif remove_pixel == "diffusion":
-            pixel_removal = run_markdiffusion_purify(
-                dest,
-                dest,
-                upstream_dir=markdiffusion_dir,
-                strength=markdiffusion_strength,
-                model=markdiffusion_model,
-                size=markdiffusion_size,
-                steps=markdiffusion_steps,
-                device=markdiffusion_device,
-                timeout=markdiffusion_timeout,
-            )
-            if pixel_removal.get("available"):
-                actions.append(
-                    f"DiffusionPurification pixel removal (strength {markdiffusion_strength})"
-                )
-            else:
-                actions.append(
-                    "DiffusionPurification pixel removal skipped: "
-                    f"{pixel_removal.get('error', 'unknown error')}"
-                )
-        else:
-            raise ValueError(f"unknown pixel remover: {remove_pixel}")
+        pixel_removal = _run_pixel_removal(
+            dest,
+            remove_pixel,
+            actions,
+            ctrlregen_dir=ctrlregen_dir,
+            ctrlregen_strength=ctrlregen_strength,
+            ctrlregen_steps=ctrlregen_steps,
+            ctrlregen_device=ctrlregen_device,
+            ctrlregen_seed=ctrlregen_seed,
+            ctrlregen_timeout=ctrlregen_timeout,
+            markdiffusion_dir=markdiffusion_dir,
+            markdiffusion_strength=markdiffusion_strength,
+            markdiffusion_model=markdiffusion_model,
+            markdiffusion_size=markdiffusion_size,
+            markdiffusion_steps=markdiffusion_steps,
+            markdiffusion_device=markdiffusion_device,
+            markdiffusion_timeout=markdiffusion_timeout,
+        )
 
     after = inspect_image(dest, synthid_dir=synthid_dir)
     return {
