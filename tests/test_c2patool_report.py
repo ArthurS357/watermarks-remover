@@ -198,7 +198,7 @@ def test_capabilities_rejects_a_present_but_unrunnable_tool(monkeypatch):
     """
     import server
 
-    server._tool_usable.cache_clear()
+    server._tool_probe.cache_clear()
     monkeypatch.setattr(server, "which", lambda cmd: f"/usr/local/bin/{cmd}")
 
     def fake_run(cmd, **kwargs):
@@ -213,4 +213,4 @@ def test_capabilities_rejects_a_present_but_unrunnable_tool(monkeypatch):
     assert tools["c2patool"] is False, "a binary that cannot execute is not available"
     assert tools["exiftool"] is True
     assert tools["qpdf"] is True
-    server._tool_usable.cache_clear()
+    server._tool_probe.cache_clear()

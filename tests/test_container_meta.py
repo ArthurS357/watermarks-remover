@@ -791,3 +791,89 @@ def test_zip_budget_rejection_propagates_from_inspect(monkeypatch):
     monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 1)
     with pytest.raises(container_meta.ZipBudgetExceeded):
         inspect_docx(buf.getvalue())
+
+
+def _make_odt_with_paragraph(text: str) -> bytes:
+    buf = io.BytesIO()
+    content = (
+        '<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
+        f"<office:body><office:text><text:p>{text}</text:p></office:text></office:body>"
+        "</office:document-content>"
+    )
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+        zf.writestr("content.xml", content)
+    return buf.getvalue()
+
+
+def _docx_body(data: bytes) -> str:
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return zf.read("word/document.xml").decode("utf-8")
+
+
+def _odt_body(data: bytes) -> str:
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return zf.read("content.xml").decode("utf-8")
+
+
+DASHED = "cost\N{EM DASH}benefit"
+
+
+@pytest.mark.parametrize(
+    ("build", "clean", "body"),
+    [
+        (_make_docx_with_body_text, clean_docx, _docx_body),
+        (_make_odt_with_paragraph, clean_odt, _odt_body),
+    ],
+)
+def test_zip_containers_forward_text_options(build, clean, body):
+    data = build(DASHED)
+    assert "cost-benefit" in body(clean(data)[0])
+    assert DASHED in body(clean(data, strip_em_dash=False)[0])
+    homoglyph = build("p\N{CYRILLIC SMALL LETTER A}y")
+    assert "pay" not in body(clean(homoglyph)[0])
+    assert "pay" in body(clean(homoglyph, aggressive_homoglyphs=True)[0])
+
+
+@pytest.mark.parametrize(("suffix", "fmt"), [(".md", "markdown"), (".html", "html")])
+def test_clean_container_forwards_text_options_to_text_bodies(tmp_path: Path, suffix, fmt):
+    src = tmp_path / f"in{suffix}"
+    dest = tmp_path / f"out{suffix}"
+    src.write_text(f"{DASHED} \N{FULLWIDTH LATIN CAPITAL LETTER A}\n", encoding="utf-8")
+
+    clean_container(src, dest, fmt=fmt)
+    assert dest.read_text(encoding="utf-8") == "cost-benefit \N{FULLWIDTH LATIN CAPITAL LETTER A}\n"
+
+    clean_container(src, dest, fmt=fmt, strip_em_dash=False, nfkc=True)
+    assert dest.read_text(encoding="utf-8") == f"{DASHED} A\n"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "build", "body"),
+    [
+        (".docx", _make_docx_with_body_text, _docx_body),
+        (".odt", _make_odt_with_paragraph, _odt_body),
+    ],
+)
+def test_clean_container_forwards_text_options_to_zip_bodies(tmp_path: Path, suffix, build, body):
+    src = tmp_path / f"in{suffix}"
+    dest = tmp_path / f"out{suffix}"
+    src.write_bytes(build(DASHED))
+
+    clean_container(src, dest, strip_em_dash=False)
+    assert DASHED in body(dest.read_bytes())
+    clean_container(src, dest)
+    assert "cost-benefit" in body(dest.read_bytes())
+
+
+def test_clean_file_cli_keep_em_dash_reaches_container_and_text(tmp_path: Path):
+    for name in ("note.md", "note.txt"):
+        src = tmp_path / name
+        src.write_text(DASHED + "\n", encoding="utf-8")
+        kept = tmp_path / f"kept-{name}"
+        stripped = tmp_path / f"stripped-{name}"
+        assert _run("clean_file.py", str(src), "-o", str(kept), "--keep-em-dash").returncode == 0
+        assert _run("clean_file.py", str(src), "-o", str(stripped)).returncode == 0
+        assert kept.read_text(encoding="utf-8") == DASHED + "\n"
+        assert stripped.read_text(encoding="utf-8") == "cost-benefit\n"

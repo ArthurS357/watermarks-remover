@@ -27,6 +27,7 @@ Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **Ope
 
 Skill path: [`skills/remove-ai-marks/`](skills/remove-ai-marks/)  
 Service path: [`service/`](service/)  
+**Integrating an agent?** [`AI_INTEGRATION.md`](AI_INTEGRATION.md) is a self-contained HTTP guide — start commands, a curl example per endpoint, sample payloads, and the limitations to be honest about.  
 (migration: formerly `remove-claude-marks`; slash alias `/remove-claude-marks` still documented)
 
 ## Install (agent skill)
@@ -86,6 +87,19 @@ python3 service/scripts/server.py --host 127.0.0.1 --port 8765
 ```
 
 ### Windows (no Docker)
+
+`watermarks-server.cmd` (copy it into a folder on `PATH`, e.g. `%USERPROFILE%\bin`) drives the service lifecycle:
+
+```
+watermarks-server              # open a log window, return immediately
+watermarks-server --wait [N]   # open it and block until /health answers (default 30s); exit 0 ok / 1 timeout
+watermarks-server --status     # online | degraded | offline; exit 0 answering / 1 offline
+watermarks-server --stop       # shut it down (idempotent)
+```
+
+`--wait` is the mode for automation and agents: it watches the process it spawned, so a server that dies before answering (python missing, port taken, bind refused) fails immediately instead of waiting out the budget. `--status` reads `/readyz`, so it names the missing tools when the service is degraded.
+
+`start-watermarks-server.ps1` also accepts `-Port` (default 8765) with a port-scoped pid file, which is what lets `tests/test_launcher_ps1.py` exercise every mode against a free port without touching a running server.
 
 See [docs/windows-autostart.md](docs/windows-autostart.md) for auto-starting the service at Windows login without Docker.
 
@@ -165,26 +179,33 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
-| GET | `/health` | — | `{"ok": true, "version": ...}` |
+| GET | `/health` | — | `{"ok": true, "version": ...}` — **no auth** |
+| GET | `/readyz` | — | readiness + diagnosis: `{"status": "ok"\|"degraded", "service", "capabilities", "tools"}` — **no auth** |
 | GET | `/capabilities` | — | optional tools / backends usable (each tool is version-probed, not just found on `PATH`) |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
 | POST | `/inspect/batch` | `{"files": [{"file": "<base64>", "name": "notes.md"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "suspicious", "report"}, ...]}` |
+| POST | `/detect/batch` | `{"files": [{"file": "<base64>", "name": "notes.txt"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "detections": [...], "report"}, ...]}` |
 | POST | `/clean/batch` | `{"files": [{"file": "<base64>", "name": "notes.md", "options": {...}}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "cleaned": "<base64>", "report"}, ...]}` |
 
-Batch endpoints loop the same per-file pipeline as `/inspect` and `/clean`, capped at `WATERMARKS_MAX_BATCH_FILES` files per request (default 50). A malformed entry (bad base64, unknown option, unrecognized format) surfaces as that entry's `"ok": false` with an `"error"` string — it never aborts the rest of the batch.
+Batch endpoints loop the same per-file pipeline as `/inspect`, `/detect` and `/clean`, capped at `WATERMARKS_MAX_BATCH_FILES` files per request (default 50). A malformed entry (bad base64, unknown option, unrecognized format) surfaces as that entry's `"ok": false` with an `"error"` string — it never aborts the rest of the batch.
 
 ```bash
 WM="http://127.0.0.1:8765"
 curl -s "$WM/health"                       # {"ok": true, "version": "..."}
+curl -s "$WM/readyz"                       # which layers work, which optional tools are missing
 curl -s "$WM/openapi.json"                 # machine-readable OpenAPI 3.0.3 contract
 curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
 The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request. Loopback-only bind by default (`--host` to override); intended for a trusted network.
+
+`/health` answers "is the process up?"; **`/readyz`** answers "can it do the job well?" — it lists the supported layers (`unicode_invisible`, `statistical_text`, `metadata`, plus `pixel_removal` when a backend is configured) and the status of each optional tool, with its version when present. `status: "degraded"` means a tool is missing: cleaning still runs, just less thoroughly, so a client should downgrade what it claims rather than refuse. Both endpoints are served **before the auth gate** so a client can diagnose the service before it holds a token; neither returns filesystem paths, environment values, or API-key state.
+
+`/readyz` also reports `pixel_backends` per backend, one step beyond `/capabilities`: where `/capabilities` answers `bool(env var set)`, `/readyz` confirms the configured directory actually exists — the same precondition the cleaning path checks — and distinguishes `"not configured"` from `"configured directory not found"`. It carries `verified: false` because proving a backend really works means importing torch and model weights, which an unauthenticated endpoint will not do. `/capabilities` keeps its boolean shape unchanged.
 
 ### Watermark detection (`/detect` and `detect_before` / `detect_after`)
 
@@ -280,6 +301,13 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | Var | Reaches | Purpose |
 | --- | --- | --- |
 | `WATERMARKS_SERVER_API_KEY` | `wr-core` (via compose `environment`) | Require `Authorization: Bearer <key>` on the HTTP API |
+| `WATERMARKS_SERVER_HOST` | `server.py` | Bind host; default `127.0.0.1`. A non-loopback host with no API key is refused unless `WATERMARKS_SERVER_ALLOW_INSECURE_BIND=1` |
+| `WATERMARKS_SERVER_PORT` | `server.py` | Bind port; default `8765` |
+| `WATERMARKS_MAX_CONCURRENT_REQUESTS` | `server.py` | POST requests processed at once; default `4`. Over the limit answers `503` immediately. Raise together with the container `mem_limit` |
+| `WATERMARKS_SERVER_REQUEST_TIMEOUT` | `server.py` | Seconds a connection may idle before it is dropped (slowloris guard); default `30` |
+| `WATERMARKS_MAX_BATCH_FILES` | `server.py` | Files per batch request; default `50` |
+| `WATERMARKS_MAX_INPUT_BYTES` | all CLIs + `server.py` | Hard cap on a single input; default 256 MiB. The HTTP body cap is 1.5x this (base64 overhead) |
+| `WATERMARKS_MAX_STDIN_BYTES` | all CLIs | Hard cap on stdin input; default 64 MiB |
 | `WATERMARKS_GEMINI_*` | — | Removed Aug 2026: Google retired SynthID text watermarking on the API (see `vendor-notes.md`) |
 | `WATERMARKS_SYNTHID_SCORER_URL` | `wr-core` | Point core at the `wr-synthid-score` sidecar for SynthID image scoring (e.g. `http://wr-synthid-score:8766` under the heavy profile) |
 | `WATERMARKS_SYNTHID_SCORER_API_KEY` | `wr-core` + `wr-synthid-score` | Shared bearer key for the scorer sidecar (empty = no auth) |

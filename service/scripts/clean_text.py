@@ -45,6 +45,11 @@ def main() -> int:
         action="store_true",
         help="Also strip legitimate RTL/LTR directional marks and isolates",
     )
+    p.add_argument(
+        "--keep-em-dash",
+        action="store_true",
+        help="Keep em dashes / horizontal bars instead of rewriting them to ', ' or '-'",
+    )
     p.add_argument("--stats", action="store_true", help="Print stats JSON to stderr")
     p.add_argument(
         "--force-text",
@@ -67,6 +72,7 @@ def main() -> int:
         normalize_spaces=not args.no_normalize_spaces,
         strip_emoji_glue=args.strip_emoji_glue,
         strip_bidi=args.strip_bidi,
+        strip_em_dash=not args.keep_em_dash,
     )
 
     out = args.output

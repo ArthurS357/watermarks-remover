@@ -31,6 +31,16 @@ Use the available Python 3 launcher for the platform. Replace `PYTHON` below
 with `python3` on most macOS/Linux systems, `py` on Windows, or another verified
 Python 3 command.
 
+Verify the launcher before using it — `PYTHON --version` must print 3.12 or
+newer. If no launcher works, say exactly that and stop:
+
+> No Python 3.12+ launcher found (`python3` and `py` both failed), so the
+> deterministic Unicode pass cannot run. Install Python 3.12+, or tell me to
+> proceed with the rewrite only — the result will not have been Unicode-scrubbed.
+
+Do not silently skip the Unicode pass, and do not claim a file was scrubbed
+when the scripts never ran.
+
 Inspect first when editing an existing file:
 
 ```bash

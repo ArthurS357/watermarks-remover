@@ -51,7 +51,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import cleaned_path, eprint, read_text_input, write_text_output
+from common import cleaned_path, env_flag, env_int, eprint, read_text_input, write_text_output
 from text_detectors import GumbelTextDetector, MarkLLMTextDetector
 from text_unicode import clean_text
 
@@ -79,7 +79,10 @@ PROMPTS = {
     "humanize": (
         "Rewrite the following text so it reads as if a human wrote it from scratch. "
         "Vary sentence rhythm and length, replace formulaic AI-style transitions and "
-        "filler with concrete natural phrasing, and use plain, varied wording. Preserve "
+        "filler with concrete natural phrasing, and use plain, varied wording. Use no em "
+        "dashes: recast those clauses with commas, parentheses or separate sentences. "
+        "Drop any assistant self-reference (being an AI or language model, training data, "
+        "knowledge cutoffs, apologies for confusion). Preserve "
         "all facts, numbers, names, and technical identifiers. Do not add or remove "
         "claims. Output only the rewritten text.\n\n---\n{TEXT}"
     ),
@@ -152,17 +155,6 @@ def _env(name: str, default: str | None = None) -> str | None:
     if v is None or v == "":
         return default
     return v
-
-
-def _flag_env(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(_env(name, str(default)) or str(default))
-    except ValueError:
-        return default
 
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -683,7 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--candidates",
         type=int,
-        default=_env_int("WATERMARKS_REWRITE_CANDIDATES", DEFAULT_CANDIDATES),
+        default=env_int("WATERMARKS_REWRITE_CANDIDATES", DEFAULT_CANDIDATES),
         help="Variants generated per loop iteration; each variant is one "
         "rewrite + one evaluation, and the loop stops as soon as an attempt "
         f"passes (default: {DEFAULT_CANDIDATES}; WATERMARKS_REWRITE_CANDIDATES)",
@@ -691,7 +683,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-loops",
         type=int,
-        default=_env_int("WATERMARKS_REWRITE_LOOPS", DEFAULT_MAX_LOOPS),
+        default=env_int("WATERMARKS_REWRITE_LOOPS", DEFAULT_MAX_LOOPS),
         help="Max evaluation rounds; each round generates --candidates "
         "variants and stops when one passes. Raising this retries new "
         f"variants until an evaluation passes (default: {DEFAULT_MAX_LOOPS}; "
@@ -752,7 +744,7 @@ def main() -> int:
     allow_remote = (
         args.allow_remote
         if args.allow_remote is not None
-        else _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
+        else env_flag("WATERMARKS_REWRITE_ALLOW_REMOTE")
     )
     try:
         result, info = rewrite(

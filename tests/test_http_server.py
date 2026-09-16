@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import common
 import container_meta
 import server
 
@@ -98,6 +99,164 @@ def test_capabilities(conn):
     assert "harnesses" in body
 
 
+def test_readyz_ok_when_every_tool_is_usable(conn, monkeypatch):
+    monkeypatch.setattr(server, "_tool_probe", lambda cmd: (True, f"{cmd} 1.2.3"))
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert body["ok"] is True
+    assert body["status"] == "ok"
+    assert body["service"]["name"] == "watermarks-remover"
+    assert body["service"]["version"] == server.VERSION
+    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf"}
+    assert body["tools"]["qpdf"] == {"available": True, "version": "qpdf 1.2.3"}
+
+
+def test_readyz_degraded_when_a_tool_is_missing(conn, monkeypatch):
+    monkeypatch.setattr(
+        server, "_tool_probe", lambda cmd: (False, None) if cmd == "qpdf" else (True, "x 1")
+    )
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    # Degraded is advisory, not a failure: the layers still run, less thoroughly.
+    assert body["ok"] is True
+    assert body["status"] == "degraded"
+    assert body["tools"]["qpdf"] == {"available": False}
+    assert "version" not in body["tools"]["qpdf"], "a missing tool reports no version"
+    assert body["tools"]["exiftool"]["available"] is True
+
+
+def test_readyz_always_lists_the_toolless_layers(conn, monkeypatch):
+    """The three core layers need no optional binary, so they are never absent."""
+    monkeypatch.setattr(server, "_tool_probe", lambda cmd: (False, None))
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert body["capabilities"] == ["unicode_invisible", "statistical_text", "metadata"]
+
+
+def test_readyz_lists_pixel_removal_when_a_backend_is_configured(conn, monkeypatch, tmp_path):
+    # The directory must exist: an env var pointing nowhere is a broken config,
+    # not a usable backend (see the pixel_backends tests above).
+    monkeypatch.setenv("NOAI_WATERMARK_DIR", str(tmp_path))
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert "pixel_removal" in body["capabilities"]
+
+
+def test_readyz_pixel_backend_configured_when_dir_exists(conn, monkeypatch, tmp_path):
+    monkeypatch.setenv("NOAI_WATERMARK_DIR", str(tmp_path))
+    monkeypatch.delenv("MARKDIFFUSION_DIR", raising=False)
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert body["pixel_backends"]["ctrlregen"] == {"configured": True}
+    assert body["pixel_backends"]["diffusion"]["configured"] is False
+    assert "pixel_removal" in body["capabilities"]
+
+
+def test_readyz_pixel_backend_set_but_missing_dir_is_not_configured(conn, monkeypatch, tmp_path):
+    """An env var pointing nowhere is a broken config, not a working backend."""
+    monkeypatch.setenv("NOAI_WATERMARK_DIR", str(tmp_path / "does-not-exist"))
+    monkeypatch.delenv("MARKDIFFUSION_DIR", raising=False)
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    ctrlregen = body["pixel_backends"]["ctrlregen"]
+    assert ctrlregen["configured"] is False
+    assert ctrlregen["reason"] == "configured directory not found"
+    # The old bool(env) check would have advertised the layer here.
+    assert "pixel_removal" not in body["capabilities"]
+
+
+def test_readyz_pixel_backend_distinguishes_unset_from_broken(conn, monkeypatch, tmp_path):
+    monkeypatch.delenv("NOAI_WATERMARK_DIR", raising=False)
+    monkeypatch.setenv("MARKDIFFUSION_DIR", str(tmp_path / "gone"))
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert body["pixel_backends"]["ctrlregen"]["reason"] == "not configured"
+    assert body["pixel_backends"]["diffusion"]["reason"] == "configured directory not found"
+
+
+def test_readyz_never_claims_pixel_backends_are_verified(conn, monkeypatch, tmp_path):
+    """`configured` must not be readable as `works`; the response says so itself."""
+    monkeypatch.setenv("NOAI_WATERMARK_DIR", str(tmp_path))
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert body["pixel_backends"]["verified"] is False
+    assert "not imported here" in body["pixel_backends"]["note"]
+
+
+def test_readyz_pixel_backends_never_leak_the_configured_path(conn, monkeypatch, tmp_path):
+    secret = tmp_path / "very-private-checkout-name"
+    secret.mkdir()
+    monkeypatch.setenv("NOAI_WATERMARK_DIR", str(secret))
+    monkeypatch.setenv("MARKDIFFUSION_DIR", str(tmp_path / "another-private-name"))
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    blob = json.dumps(body)
+    assert "very-private-checkout-name" not in blob
+    assert "another-private-name" not in blob
+    assert str(tmp_path) not in blob
+
+
+def test_capabilities_pixel_backends_keep_their_boolean_contract(conn, monkeypatch, tmp_path):
+    """/capabilities is an existing public contract: still bools, not objects."""
+    monkeypatch.setenv("NOAI_WATERMARK_DIR", str(tmp_path))
+    status, body = _get(conn, "/capabilities")
+    assert status == 200
+    assert body["pixel_backends"]["ctrlregen"] is True
+    assert isinstance(body["pixel_backends"]["diffusion"], bool)
+
+
+def test_readyz_needs_no_auth(conn, monkeypatch):
+    """Diagnosis must work before a client has a token, like /health."""
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    status, body = _get(conn, "/readyz")
+    assert status == 200
+    assert body["status"] in {"ok", "degraded"}
+
+
+def test_readyz_leaks_no_paths_or_env(conn, monkeypatch):
+    monkeypatch.setattr(server, "which", lambda cmd: f"/usr/local/secret-prefix/{cmd}")
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    server._tool_probe.cache_clear()
+    try:
+        status, body = _get(conn, "/readyz")
+    finally:
+        server._tool_probe.cache_clear()
+    assert status == 200
+    blob = json.dumps(body)
+    assert "secret-prefix" not in blob, "an unauthenticated probe must not leak host paths"
+    assert "sekret" not in blob
+    assert set(body) == {"ok", "status", "service", "capabilities", "tools", "pixel_backends"}
+
+
+def test_readyz_version_banner_is_capped(conn, monkeypatch):
+    monkeypatch.setattr(server, "which", lambda cmd: f"/usr/bin/{cmd}")
+    server._tool_probe.cache_clear()
+
+    class _R:
+        returncode = 0
+        stdout = "v" * 500 + chr(10) + "second line"
+        stderr = ""
+
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _R())
+    try:
+        status, body = _get(conn, "/readyz")
+    finally:
+        server._tool_probe.cache_clear()
+    assert status == 200
+    version = body["tools"]["qpdf"]["version"]
+    assert len(version) == server._MAX_VERSION_CHARS
+    assert "second line" not in version
+
+
+def test_openapi_spec_marks_readyz_as_public(conn, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    conn.request("GET", "/openapi.json", headers={"Authorization": "Bearer sekret"})
+    resp = conn.getresponse()
+    body = json.loads(resp.read())
+    assert resp.status == 200
+    assert body["paths"]["/readyz"]["get"]["security"] == []
+
+
 def test_openapi_spec_covers_all_endpoints(conn):
     status, body = _get(conn, "/openapi.json")
     assert status == 200
@@ -105,6 +264,7 @@ def test_openapi_spec_covers_all_endpoints(conn):
     assert body["info"]["title"] == "watermarks-remover service"
     expected = {
         "/health": {"get"},
+        "/readyz": {"get"},
         "/capabilities": {"get"},
         "/openapi.json": {"get"},
         "/inspect": {"post"},
@@ -395,18 +555,48 @@ def test_main_allows_insecure_bind_via_env_var(monkeypatch):
 @pytest.mark.parametrize("value", ["1", "true", "True", "YES", "on", "On"])
 def test_flag_env_true_values(monkeypatch, value):
     monkeypatch.setenv("WATERMARKS_TEST_FLAG", value)
-    assert server._flag_env("WATERMARKS_TEST_FLAG") is True
+    assert server.env_flag("WATERMARKS_TEST_FLAG") is True
 
 
 @pytest.mark.parametrize("value", ["0", "false", "False", "no", "", "anything-else"])
 def test_flag_env_false_values(monkeypatch, value):
     monkeypatch.setenv("WATERMARKS_TEST_FLAG", value)
-    assert server._flag_env("WATERMARKS_TEST_FLAG") is False
+    assert server.env_flag("WATERMARKS_TEST_FLAG") is False
 
 
 def test_flag_env_unset_is_false(monkeypatch):
     monkeypatch.delenv("WATERMARKS_TEST_FLAG", raising=False)
-    assert server._flag_env("WATERMARKS_TEST_FLAG") is False
+    assert server.env_flag("WATERMARKS_TEST_FLAG") is False
+
+
+def test_env_int_falls_back_on_malformed_value(monkeypatch, capsys):
+    # A typo in an env var must not abort startup: these are read at import
+    # time, so raising would give a bare traceback naming no variable.
+    monkeypatch.setenv("WATERMARKS_TEST_INT", "four")
+    assert common.env_int("WATERMARKS_TEST_INT", 4) == 4
+    assert "WATERMARKS_TEST_INT" in capsys.readouterr().err
+
+
+def test_env_int_clamps_below_minimum(monkeypatch, capsys):
+    # WATERMARKS_MAX_CONCURRENT_REQUESTS=0 sizes the request semaphore at
+    # zero, which makes every POST answer 503 forever while /health still
+    # reports ok. Clamp instead of accepting a silent full outage.
+    monkeypatch.setenv("WATERMARKS_TEST_INT", "0")
+    assert common.env_int("WATERMARKS_TEST_INT", 4, minimum=1) == 1
+    assert "minimum" in capsys.readouterr().err
+
+
+def test_env_int_accepts_valid_override(monkeypatch):
+    monkeypatch.setenv("WATERMARKS_TEST_INT", "9")
+    assert common.env_int("WATERMARKS_TEST_INT", 4, minimum=1) == 9
+
+
+def test_request_semaphore_is_never_sized_zero():
+    # Guards the wiring, not just the helper: MAX_CONCURRENT_REQUESTS feeds
+    # BoundedSemaphore directly.
+    assert server.MAX_CONCURRENT_REQUESTS >= 1
+    assert server._REQUEST_SLOTS.acquire(blocking=False) is True
+    server._REQUEST_SLOTS.release()
 
 
 def test_concurrency_limit_returns_503(conn, monkeypatch):
@@ -578,3 +768,27 @@ def test_clean_extensionless_svg_container_post_inspection(conn):
     assert body["kind"] == "container"
     assert body["report"]["format"] == "svg"
     assert body["report"]["still_has_c2pa"] is False
+
+
+def test_clean_batch_forwards_text_options_to_containers(conn):
+    dashed = "cost\N{EM DASH}benefit \N{FULLWIDTH LATIN CAPITAL LETTER A}\n".encode()
+    status, body = _post(
+        conn,
+        "/clean/batch",
+        {
+            "files": [
+                {"file": _b64(dashed), "name": "default.md"},
+                {
+                    "file": _b64(dashed),
+                    "name": "opted.md",
+                    "options": {"keep_em_dash": True, "nfkc": True},
+                },
+                {"file": _b64(dashed), "name": "opted.txt", "options": {"keep_em_dash": True}},
+            ]
+        },
+    )
+    assert status == 200
+    out = {r["name"]: base64.b64decode(r["cleaned"]).decode("utf-8") for r in body["results"]}
+    assert out["default.md"] == "cost-benefit \N{FULLWIDTH LATIN CAPITAL LETTER A}\n"
+    assert out["opted.md"] == "cost\N{EM DASH}benefit A\n"
+    assert out["opted.txt"] == dashed.decode()

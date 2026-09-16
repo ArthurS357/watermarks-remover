@@ -36,15 +36,61 @@ Base URL comes from `WATERMARKS_SERVICE_URL`, default `http://127.0.0.1:8765`:
 WM="${WATERMARKS_SERVICE_URL:-http://127.0.0.1:8765}"
 ```
 
-The service is started either by the operator (`docker compose up -d`, or a
-published GHCR image) or locally (`make serve`). **Always check it first**, and
-stop with a clear message if it is unreachable — never fall back to local
-cleaning:
+**Always check it first**, and never fall back to local cleaning — this skill
+contains no cleaning code:
 
 ```bash
 curl -sf "$WM/health"
 # {"ok": true, "version": "..."}
 ```
+
+### If /health fails: offer to start it
+
+Do not just report the failure. **Offer to start the service, then wait for the
+user's answer.**
+
+On Windows, one command starts it and blocks until it is actually ready:
+
+```bash
+watermarks-server --wait
+```
+
+It opens a "Watermarks Server" window with live logs, polls `/health` for up to
+30 seconds (`watermarks-server --wait 60` for a longer budget), and exits `0`
+once the service answers or `1` on timeout. `watermarks-server --status` prints
+`online` / `degraded` / `offline`; `watermarks-server --stop` shuts it down.
+
+Elsewhere, or when that command is not installed: `make serve`,
+`docker compose up -d`, or
+`python3 service/scripts/server.py --host 127.0.0.1 --port 8765`.
+
+Rules for the offer:
+
+- **Ask before running it.** Starting a background server is a side effect the
+  user has not asked for. One short question is enough: "The watermarks service
+  is offline. Start it with `watermarks-server --wait`?"
+- **Skip the question only when you already hold permission** for that command
+  in this session (the user pre-authorized it, or approved the same command
+  earlier).
+- **If it exits non-zero**, do not retry in a loop. Report the exit code, point
+  at the "Watermarks Server" window for the real error, and stop.
+- **If the user declines**, hand them the exact command and stop. Do not clean
+  anything locally and do not offer a degraded substitute.
+
+### Readiness
+
+Once `/health` answers, `/readyz` says whether the service can do the job well.
+It needs no API key, so it works before you have a token:
+
+```bash
+curl -s "$WM/readyz"
+# {"status": "ok"|"degraded", "service": {...}, "capabilities": [...], "tools": {...}}
+```
+
+`status: "degraded"` means an optional tool (`exiftool`, `qpdf`, `c2patool`) is
+missing. Cleaning still runs — **downgrade what you promise**, do not refuse.
+PDF strip in particular is best-effort without `exiftool` and incomplete
+without `qpdf`.
 
 If `WATERMARKS_SERVER_API_KEY` is set on the service, every request needs
 `-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY"`.
@@ -71,7 +117,8 @@ field and writes it to the output path itself.
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
-| GET | `/health` | — | `{"ok": true, "version": ...}` |
+| GET | `/health` | — | `{"ok": true, "version": ...}` (no auth) |
+| GET | `/readyz` | — | `{"status", "service", "capabilities", "tools"}` (no auth) |
 | GET | `/capabilities` | — | optional tools / backends present |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
@@ -329,6 +376,10 @@ Always state:
 
 ## Service not reachable?
 
-If `$WM/health` fails: tell the user the service is down and how to start it
-(`docker compose up -d`, `make serve`, or the published GHCR image). Do **not**
-attempt to clean locally — this skill contains no cleaning code.
+Offer to start it — see **Service access → If /health fails** above. Short form:
+
+1. Ask: "The watermarks service is offline. Start it with `watermarks-server --wait`?"
+2. On yes (or with permission already granted), run it and check the exit code.
+3. On no, or on a non-zero exit, give the user the command and stop.
+
+Never attempt to clean locally — this skill contains no cleaning code.

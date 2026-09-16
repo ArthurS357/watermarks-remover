@@ -95,9 +95,46 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
     (r"\bmoreover\b[,\s]", "moreover,", 0.6),
     (r"\bas\s+an\s+ai\b", "as an AI", 1.5),
     (r"\bi\s+hope\s+this\s+helps\b", "I hope this helps", 1.2),
+    # Direct assistant self-disclosure: not cadence but provenance in plain
+    # text, so each one alone should carry a short sample over the threshold.
+    (
+        r"\bas\s+an?\s+(?:large\s+language\s+model|ai\s+(?:language\s+)?(?:model|assistant))\b",
+        "as a large language model / AI assistant",
+        2.0,
+    ),
+    (
+        r"\bi(?:'m|\s+am)\s+(?:just\s+)?an?\s+(?:ai|language\s+model|chatbot)\b",
+        "I am an AI / language model",
+        2.0,
+    ),
+    (
+        r"\b(?:my|the)\s+(?:training\s+data|knowledge\s+cut-?off)\b",
+        "my training data / knowledge cutoff",
+        1.8,
+    ),
+    (
+        r"\bi\s+(?:can'?t|cannot|do\s+not|don'?t)\s+(?:have\s+(?:access\s+to|the\s+ability)|browse|access)\b[\w\s]*\b(?:real-?time|internet|web|current)\b",
+        "I cannot access real-time/the internet",
+        1.6,
+    ),
+    (
+        r"\bi\s+(?:apologize|'m\s+sorry)\s+for\s+(?:the\s+)?(?:confusion|any\s+confusion)\b",
+        "I apologize for the confusion",
+        1.2,
+    ),
+    (
+        r"\b(?:let'?s|let\s+us)\s+(?:dive|delve)\s+(?:right\s+)?in(?:to)?\b",
+        "let's dive in",
+        1.0,
+    ),
+    (r"\bit'?s\s+(?:important|worth)\s+to\s+remember\b", "it's important to remember", 0.8),
+    (r"\bin\s+the\s+realm\s+of\b", "in the realm of", 1.1),
+    (r"\bgame[- ]chang(?:er|ing)\b", "game-changer", 0.8),
+    (r"\bcannot\s+be\s+overstated\b", "cannot be overstated", 1.2),
+    (r"\bembark(?:s|ed|ing)?\s+on\s+a\s+journey\b", "embark on a journey", 1.2),
+    (r"\bat\s+the\s+end\s+of\s+the\s+day\b[,\s]", "at the end of the day", 0.6),
 )
 
-RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
 RE_WORDS = re.compile(r"\b[\w'-]+\b", re.UNICODE)
 
 

@@ -235,3 +235,24 @@ def test_clean_epub_prunes_opf_manifest_for_dropped_part():
         opf = zf.read("OEBPS/content.opf").decode("utf-8")
         assert "custommeta.xml" not in opf
         assert 'id="c1"' in opf
+
+
+def test_clean_epub_forwards_text_options():
+    data = _build_epub(body_text="cost\N{EM DASH}benefit", with_c2pa_png=False)
+
+    def chapter(epub: bytes) -> str:
+        with zipfile.ZipFile(io.BytesIO(epub)) as zf:
+            return zf.read("OEBPS/chapter1.xhtml").decode("utf-8")
+
+    assert "cost-benefit" in chapter(clean_epub(data)[0])
+    assert "cost\N{EM DASH}benefit" in chapter(clean_epub(data, strip_em_dash=False)[0])
+
+
+def test_clean_container_forwards_text_options_to_epub(tmp_path: Path):
+    src = tmp_path / "in.epub"
+    dest = tmp_path / "out.epub"
+    src.write_bytes(_build_epub(body_text="cost\N{EM DASH}benefit", with_c2pa_png=False))
+
+    clean_container(src, dest, strip_em_dash=False)
+    with zipfile.ZipFile(dest) as zf:
+        assert "cost\N{EM DASH}benefit" in zf.read("OEBPS/chapter1.xhtml").decode("utf-8")

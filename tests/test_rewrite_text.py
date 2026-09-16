@@ -17,9 +17,9 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import rewrite_text
+from common import env_flag
 from rewrite_text import (
     _check_remote,
-    _flag_env,
     _lexical_divergence,
     _select_candidate,
     build_prompt,
@@ -509,14 +509,14 @@ def test_check_remote_denies_opt_in_with_literal_private_ip():
         _check_remote("http://10.0.0.5:11434", allow_remote=True)
 
 
-def test_flag_env(monkeypatch):
-    assert not _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
+def test_env_flag(monkeypatch):
+    assert not env_flag("WATERMARKS_REWRITE_ALLOW_REMOTE")
     monkeypatch.setenv("WATERMARKS_REWRITE_ALLOW_REMOTE", "1")
-    assert _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
+    assert env_flag("WATERMARKS_REWRITE_ALLOW_REMOTE")
     monkeypatch.setenv("WATERMARKS_REWRITE_ALLOW_REMOTE", "true")
-    assert _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
+    assert env_flag("WATERMARKS_REWRITE_ALLOW_REMOTE")
     monkeypatch.setenv("WATERMARKS_REWRITE_ALLOW_REMOTE", "0")
-    assert not _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
+    assert not env_flag("WATERMARKS_REWRITE_ALLOW_REMOTE")
 
 
 def test_http_json_caps_response_size(monkeypatch):

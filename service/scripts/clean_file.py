@@ -23,7 +23,7 @@ from common import (
 from container_meta import clean_container, detect_container_format
 from format_dispatch import classify
 from image_meta import clean_image
-from text_unicode import clean_text
+from text_unicode import TextCleanOptions, clean_text
 
 
 def main() -> int:
@@ -34,6 +34,11 @@ def main() -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--nfkc", action="store_true", help="Text: NFKC normalize")
     p.add_argument("--aggressive-homoglyphs", action="store_true")
+    p.add_argument(
+        "--keep-em-dash",
+        action="store_true",
+        help="Text and document bodies: keep em dashes instead of rewriting them",
+    )
     p.add_argument(
         "--keep-non-ai-metadata",
         action="store_true",
@@ -51,6 +56,11 @@ def main() -> int:
         help="Clean as text even when the bytes look like a binary container",
     )
     args = p.parse_args()
+    text_options: TextCleanOptions = {
+        "nfkc": args.nfkc,
+        "aggressive_homoglyphs": args.aggressive_homoglyphs,
+        "strip_em_dash": not args.keep_em_dash,
+    }
 
     if not args.path.is_file():
         eprint(f"not a file: {args.path}")
@@ -106,11 +116,7 @@ def main() -> int:
 
     if kind == "text":
         text = raw.decode("utf-8", errors="surrogateescape")
-        cleaned, stats = clean_text(
-            text,
-            nfkc=args.nfkc,
-            aggressive_homoglyphs=args.aggressive_homoglyphs,
-        )
+        cleaned, stats = clean_text(text, **text_options)
         dest.parent.mkdir(parents=True, exist_ok=True)
         safe_write_text(dest, cleaned)
         result = {
@@ -172,7 +178,7 @@ def main() -> int:
         return 1 if residual else 0
 
     try:
-        result = clean_container(src, dest, fmt=container_fmt)
+        result = clean_container(src, dest, fmt=container_fmt, **text_options)
     except Exception as e:
         eprint(f"error: {e}")
         return 1

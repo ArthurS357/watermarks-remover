@@ -79,10 +79,61 @@ def test_strips_orphaned_bidi_embedding_controls():
 
 
 def test_clean_preserves_normal_text():
-    raw = "Normal ASCII and café — fine."
+    raw = "Normal ASCII and café, fine."
     cleaned, stats = clean_text(raw)
     assert cleaned == raw
     assert stats["removed_count"] == 0
+    assert stats["replaced_count"] == 0
+
+
+def test_em_dash_spaced_becomes_comma():
+    cleaned, stats = clean_text("The result \N{EM DASH} clear enough \N{EM DASH} held.")
+    assert cleaned == "The result, clear enough, held."
+    assert stats["replaced"]["em_dash_spaced"] == 2
+
+
+def test_em_dash_unspaced_becomes_hyphen():
+    assert clean_text("cost\N{EM DASH}benefit")[0] == "cost-benefit"
+    assert clean_text("\N{HORIZONTAL BAR} a quote")[0] == "- a quote"
+
+
+def test_em_dash_absorbs_exotic_spaces_around_it():
+    assert clean_text("a\xa0\N{EM DASH}\N{THIN SPACE}b")[0] == "a, b"
+
+
+def test_em_dash_kept_when_opted_out():
+    raw = "The result \N{EM DASH} clear \N{EM DASH} held."
+    assert clean_text(raw, strip_em_dash=False)[0] == raw
+
+
+def test_en_dash_survives_as_numeric_range():
+    assert clean_text("1990\N{EN DASH}2000")[0] == "1990\N{EN DASH}2000"
+
+
+def test_strips_c0_and_c1_controls():
+    cleaned, stats = clean_text("a\x0bb\x01c\x9dd\x85e")
+    assert cleaned == "abcde"
+    assert stats["removed_count"] == 4
+
+
+def test_keeps_structural_whitespace_controls():
+    raw = "line\ttab\nnext\r\npage\x0cbreak"
+    assert clean_text(raw)[0] == raw
+
+
+def test_braille_blank_stripped_alone_kept_in_braille_run():
+    assert clean_text("a\N{BRAILLE PATTERN BLANK}b")[0] == "a b"
+    raw = "\N{BRAILLE PATTERN DOTS-1}\N{BRAILLE PATTERN BLANK}\N{BRAILLE PATTERN DOTS-12}"
+    assert clean_text(raw)[0] == raw
+
+
+def test_inspect_reports_em_dash_and_controls():
+    report = inspect_text("cost\N{EM DASH}benefit\x0bx")
+    kinds = {h.kind: h for h in report.hits}
+    assert kinds["em_dash"].count == 1
+    assert kinds["em_dash"].codepoint == 0x2014
+    assert kinds["control"].count == 1
+    assert report.to_dict()["hits"][0]["confidence"] in ("informational", "probable")
 
 
 def test_aggressive_confusable():
@@ -488,3 +539,36 @@ def test_strip_emoji_glue_flag_strips_layout_controls():
     # Paranoid mode keeps its blanket-strip semantics.
     cleaned, _ = clean_text("\U00013079\U00013430\U000130a7", strip_emoji_glue=True)
     assert "\U00013430" not in cleaned
+
+
+def test_keeps_ansi_escape_but_still_strips_neighbouring_controls():
+    raw = "\x1b[31mred\x1b[0m plain"
+    cleaned, stats = clean_text(raw)
+    assert cleaned == raw
+    assert stats["removed_count"] == 0
+    assert inspect_text(raw).suspicious_total == 0
+    assert clean_text("\x1b[1m\x7fbold\x1b\x9b")[0] == "\x1b[1mbold"
+
+
+def test_csi_sequence_is_fully_preserved():
+    raw = "\x1b[31mTexto\x1b[0m"
+    cleaned, stats = clean_text(raw)
+    assert cleaned == raw
+    assert stats["removed_count"] == 0
+
+
+def test_osc_hyperlink_payload_is_neutralised():
+    raw = "\x1b]8;;http://malicioso.com\x1b\x5cTexto"
+    cleaned, stats = clean_text(raw)
+    assert cleaned == "]8;;http://malicioso.com\x5cTexto"
+    assert "\x1b" not in cleaned
+    assert stats["removed_count"] == 2
+    hits = [h for h in inspect_text(raw).hits if h.codepoint == 0x1B]
+    assert [(h.kind, h.count) for h in hits] == [("control", 2)]
+
+
+def test_esc_lookahead_uses_raw_input_and_handles_end_of_string():
+    assert clean_text("x\x1b")[0] == "x"
+    assert clean_text("\x1b")[0] == ""
+    assert clean_text("\x1b\x1b[0m")[0] == "\x1b[0m"
+    assert clean_text("\x1b(B\x1b[m")[0] == "(B\x1b[m"

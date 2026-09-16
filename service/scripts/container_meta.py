@@ -14,7 +14,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Unpack
 
 from common import (
     c2patool_probe_note,
@@ -48,6 +48,7 @@ from image_meta import (
 from image_meta import (
     detect_format as detect_image_format,
 )
+from text_unicode import TextCleanOptions, clean_text, inspect_text
 
 
 class ZipBudgetExceeded(Exception):
@@ -104,15 +105,6 @@ AI_META_NAME_RE = re.compile(
     r"generator|ai[-_ ]?generated|claude|anthropic|openai|gemini|synthid|"
     r"c2pa|content.?credential|provenance|digital.?source|aigc",
     re.I,
-)
-
-SVG_DROP_TAGS = frozenset(
-    {
-        "{http://www.w3.org/2000/svg}metadata",
-        "metadata",
-        "{http://www.w3.org/1999/02/22-rdf-syntax-ns#}RDF",
-        "{adobe:ns:meta/}xmpmeta",
-    }
 )
 
 
@@ -756,11 +748,6 @@ DOCX_META_PARTS = (
     "docProps/app.xml",
     "docProps/custom.xml",
 )
-DOCX_CUSTOM_PREFIXES = (
-    "customXml/",
-    "docProps/",
-)
-
 # Provenance fields in docProps/core.xml and docProps/app.xml that always come
 # out empty. dc:title is deliberately not listed: it is the document's own
 # heading, not provenance.
@@ -776,11 +763,6 @@ DOCX_SCRUB_FIELDS = (
     ("Company", "Company"),
     ("Manager", "Manager"),
 )
-
-
-def _zip_namelist(data: bytes) -> list[str]:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        return zf.namelist()
 
 
 MAX_ZIP_DECOMPRESSED_BYTES = 128 * 1024 * 1024
@@ -962,7 +944,10 @@ def _reencode_xml_text(s: str) -> str:
 
 
 def _scrub_text_runs(
-    xml_text: str, open_re: re.Pattern[str], close_re: re.Pattern[str]
+    xml_text: str,
+    open_re: re.Pattern[str],
+    close_re: re.Pattern[str],
+    **text_options: Unpack[TextCleanOptions],
 ) -> tuple[str, int, int]:
     """Run Layer A over the text runs delimited by open_re/close_re.
 
@@ -976,7 +961,6 @@ def _scrub_text_runs(
     _iter_tag_blocks) - the previous "(<tag>)(.*?)(</tag>)" lazy pattern was
     quadratic on a run of unclosed opening tags.
     """
-    from text_unicode import clean_text  # local import to avoid cycles
 
     removed = 0
     replaced = 0
@@ -986,7 +970,7 @@ def _scrub_text_runs(
         open_tag = xml_text[os_:oe]
         inner = xml_text[oe:cs_]
         close_tag = xml_text[cs_:ce]
-        new_inner, stats = clean_text(_decode_xml_entities(inner))
+        new_inner, stats = clean_text(_decode_xml_entities(inner), **text_options)
         if not (stats["removed_count"] or stats["replaced_count"]):
             continue
         removed += stats["removed_count"]
@@ -1000,7 +984,9 @@ def _scrub_text_runs(
     return "".join(out), removed, replaced
 
 
-def _scrub_docx_text(xml_text: str) -> tuple[str, int, int]:
+def _scrub_docx_text(
+    xml_text: str, **text_options: Unpack[TextCleanOptions]
+) -> tuple[str, int, int]:
     """Run Layer A over the ``<w:t>`` text runs of a DOCX part.
 
     Only ``w:t`` nodes are touched: field codes (``w:instrText``), run/paragraph
@@ -1008,20 +994,32 @@ def _scrub_docx_text(xml_text: str) -> tuple[str, int, int]:
     trailing whitespace survives the clean, the node keeps
     ``xml:space="preserve"`` so Word does not trim it.
     """
-    return _scrub_text_runs(xml_text, re.compile(r"<w:t\b[^>]*>"), re.compile(r"</w:t>"))
+    return _scrub_text_runs(
+        xml_text, re.compile(r"<w:t\b[^>]*>"), re.compile(r"</w:t>"), **text_options
+    )
 
 
-def _scrub_xlsx_text(xml_text: str) -> tuple[str, int, int]:
+def _scrub_xlsx_text(
+    xml_text: str, **text_options: Unpack[TextCleanOptions]
+) -> tuple[str, int, int]:
     """Run Layer A over the ``<t>`` text elements of an XLSX part."""
-    return _scrub_text_runs(xml_text, re.compile(r"<t\b[^>]*>"), re.compile(r"</t>"))
+    return _scrub_text_runs(
+        xml_text, re.compile(r"<t\b[^>]*>"), re.compile(r"</t>"), **text_options
+    )
 
 
-def _scrub_pptx_text(xml_text: str) -> tuple[str, int, int]:
+def _scrub_pptx_text(
+    xml_text: str, **text_options: Unpack[TextCleanOptions]
+) -> tuple[str, int, int]:
     """Run Layer A over the ``<a:t>`` text elements of a PPTX part."""
-    return _scrub_text_runs(xml_text, re.compile(r"<a:t\b[^>]*>"), re.compile(r"</a:t>"))
+    return _scrub_text_runs(
+        xml_text, re.compile(r"<a:t\b[^>]*>"), re.compile(r"</a:t>"), **text_options
+    )
 
 
-def _scrub_odt_text(xml_text: str) -> tuple[str, int, int]:
+def _scrub_odt_text(
+    xml_text: str, **text_options: Unpack[TextCleanOptions]
+) -> tuple[str, int, int]:
     """Run Layer A over ODF paragraph text (``text:p`` content, incl. spans).
 
     ``text:span``/``text:tab``/``text:s`` children live inside the paragraph,
@@ -1030,7 +1028,6 @@ def _scrub_odt_text(xml_text: str) -> tuple[str, int, int]:
     only — a whole-paragraph round trip would escape the nested markup.
     Linear scan (see _iter_tag_blocks).
     """
-    from text_unicode import clean_text  # local import to avoid cycles
 
     removed = 0
     replaced = 0
@@ -1049,7 +1046,7 @@ def _scrub_odt_text(xml_text: str) -> tuple[str, int, int]:
             if not segment or segment.startswith("<"):
                 new_parts.append(segment)
                 continue
-            new_segment, stats = clean_text(_decode_xml_entities(segment))
+            new_segment, stats = clean_text(_decode_xml_entities(segment), **text_options)
             if stats["removed_count"] or stats["replaced_count"]:
                 removed += stats["removed_count"]
                 replaced += stats["replaced_count"]
@@ -1232,7 +1229,11 @@ def _clean_embedded_media_member(raw: bytes, name: str, actions: list[str]) -> b
 
 
 def _scrub_ooxml_zip(
-    data: bytes, fmt: str, *, also_layer_a_text: bool = True
+    data: bytes,
+    fmt: str,
+    *,
+    also_layer_a_text: bool = True,
+    **text_options: Unpack[TextCleanOptions],
 ) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     budget = [0]
@@ -1309,21 +1310,21 @@ def _scrub_ooxml_zip(
             if also_layer_a_text and name.endswith(".xml"):
                 if fmt == "docx" and name.startswith("word/"):
                     text = raw.decode("utf-8", errors="replace")
-                    new, r, rp = _scrub_docx_text(text)
+                    new, r, rp = _scrub_docx_text(text, **text_options)
                     if r or rp:
                         layer_removed += r
                         layer_replaced += rp
                         raw = new.encode("utf-8")
                 elif fmt == "xlsx" and name.startswith("xl/"):
                     text = raw.decode("utf-8", errors="replace")
-                    new, r, rp = _scrub_xlsx_text(text)
+                    new, r, rp = _scrub_xlsx_text(text, **text_options)
                     if r or rp:
                         layer_removed += r
                         layer_replaced += rp
                         raw = new.encode("utf-8")
                 elif fmt == "pptx" and name.startswith("ppt/"):
                     text = raw.decode("utf-8", errors="replace")
-                    new, r, rp = _scrub_pptx_text(text)
+                    new, r, rp = _scrub_pptx_text(text, **text_options)
                     if r or rp:
                         layer_removed += r
                         layer_replaced += rp
@@ -1352,16 +1353,22 @@ def _scrub_ooxml_zip(
     return out_buf.getvalue(), actions
 
 
-def clean_docx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
-    return _scrub_ooxml_zip(data, "docx", also_layer_a_text=also_layer_a_text)
+def clean_docx(
+    data: bytes, *, also_layer_a_text: bool = True, **text_options: Unpack[TextCleanOptions]
+) -> tuple[bytes, list[str]]:
+    return _scrub_ooxml_zip(data, "docx", also_layer_a_text=also_layer_a_text, **text_options)
 
 
-def clean_xlsx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
-    return _scrub_ooxml_zip(data, "xlsx", also_layer_a_text=also_layer_a_text)
+def clean_xlsx(
+    data: bytes, *, also_layer_a_text: bool = True, **text_options: Unpack[TextCleanOptions]
+) -> tuple[bytes, list[str]]:
+    return _scrub_ooxml_zip(data, "xlsx", also_layer_a_text=also_layer_a_text, **text_options)
 
 
-def clean_pptx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
-    return _scrub_ooxml_zip(data, "pptx", also_layer_a_text=also_layer_a_text)
+def clean_pptx(
+    data: bytes, *, also_layer_a_text: bool = True, **text_options: Unpack[TextCleanOptions]
+) -> tuple[bytes, list[str]]:
+    return _scrub_ooxml_zip(data, "pptx", also_layer_a_text=also_layer_a_text, **text_options)
 
 
 def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
@@ -1399,7 +1406,9 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
     return has_c2pa, has_ai or has_c2pa, findings, {}
 
 
-def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+def clean_odt(
+    data: bytes, *, also_layer_a_text: bool = True, **text_options: Unpack[TextCleanOptions]
+) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     budget = [0]
     layer_removed = 0
@@ -1445,7 +1454,7 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
             # Layer A over the visible paragraph text of the body part.
             if also_layer_a_text and name == "content.xml":
                 text = raw.decode("utf-8", errors="replace")
-                new, r, rp = _scrub_odt_text(text)
+                new, r, rp = _scrub_odt_text(text, **text_options)
                 if r or rp:
                     layer_removed += r
                     layer_replaced += rp
@@ -1667,7 +1676,9 @@ def _scrub_epub_opf(text: str) -> tuple[str, list[str]]:
     return new, actions
 
 
-def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+def clean_epub(
+    data: bytes, *, also_layer_a_text: bool = True, **text_options: Unpack[TextCleanOptions]
+) -> tuple[bytes, list[str]]:
     """Rewrite the EPUB: scrub OPF metadata, XHTML meta/JSON-LD, and Layer A.
 
     Embedded raster/SVG media get their own metadata stripped; structural and
@@ -1678,7 +1689,6 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
     markers are dropped, and the OPF manifest is pruned afterwards so no
     dropped part stays referenced.
     """
-    from text_unicode import clean_text  # local import to avoid cycles
 
     actions: list[str] = []
     budget = [0]
@@ -1712,7 +1722,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                 if sub_actions and sub_actions != ["no HTML AI meta removed"]:
                     actions.append(f"{name}: {', '.join(sub_actions[:2])}")
                 if also_layer_a_text:
-                    text2, stats = clean_text(text)
+                    text2, stats = clean_text(text, **text_options)
                     if stats["removed_count"] or stats["replaced_count"]:
                         layer_removed += stats["removed_count"]
                         layer_replaced += stats["replaced_count"]
@@ -1977,16 +1987,12 @@ def inspect_container(path: Path) -> ContainerInspectReport:
     layer_a_total = 0
     layer_a_hits: list[dict] = []
     if fmt in ("markdown", "html"):
-        from text_unicode import inspect_text  # local import to avoid cycles
-
         ta = inspect_text(body).to_dict()
         layer_a_total = ta["suspicious_total"]
         layer_a_hits = ta["hits"]
         for h in layer_a_hits:
             findings.append(f"layer-a: {h['codepoint']} {h['label']} x{h['count']} ({h['kind']})")
     elif fmt == "epub":
-        from text_unicode import inspect_text  # local import to avoid cycles
-
         encrypted = _epub_encrypted_parts(data)
         budget: list[int] = [0]
         try:
@@ -2052,6 +2058,7 @@ def clean_container(
     fmt: str | None = None,
     *,
     also_layer_a_text: bool = True,
+    **text_options: Unpack[TextCleanOptions],
 ) -> dict[str, Any]:
     """Clean container metadata; optionally Layer-A scrub text bodies for md/html.
 
@@ -2060,7 +2067,6 @@ def clean_container(
     suffix would otherwise make markdown/HTML (which have no magic bytes)
     classify as ``unknown``.
     """
-    from text_unicode import clean_text  # local import to avoid cycles
 
     guard_file_size(path)
     data = path.read_bytes()
@@ -2076,25 +2082,25 @@ def clean_container(
         actions, meta_extra = clean_pdf(path, dest)
         meta.update(meta_extra)
     elif fmt == "docx":
-        cleaned, actions = clean_docx(data, also_layer_a_text=also_layer_a_text)
+        cleaned, actions = clean_docx(data, also_layer_a_text=also_layer_a_text, **text_options)
         safe_write_bytes(dest, cleaned)
     elif fmt == "xlsx":
-        cleaned, actions = clean_xlsx(data, also_layer_a_text=also_layer_a_text)
+        cleaned, actions = clean_xlsx(data, also_layer_a_text=also_layer_a_text, **text_options)
         safe_write_bytes(dest, cleaned)
     elif fmt == "pptx":
-        cleaned, actions = clean_pptx(data, also_layer_a_text=also_layer_a_text)
+        cleaned, actions = clean_pptx(data, also_layer_a_text=also_layer_a_text, **text_options)
         safe_write_bytes(dest, cleaned)
     elif fmt == "odt":
-        cleaned, actions = clean_odt(data, also_layer_a_text=also_layer_a_text)
+        cleaned, actions = clean_odt(data, also_layer_a_text=also_layer_a_text, **text_options)
         safe_write_bytes(dest, cleaned)
     elif fmt == "epub":
-        cleaned, actions = clean_epub(data, also_layer_a_text=also_layer_a_text)
+        cleaned, actions = clean_epub(data, also_layer_a_text=also_layer_a_text, **text_options)
         safe_write_bytes(dest, cleaned)
     elif fmt == "html":
         text = data.decode("utf-8", errors="surrogateescape")
         text, actions = clean_html(text)
         if also_layer_a_text:
-            text2, stats = clean_text(text)
+            text2, stats = clean_text(text, **text_options)
             if stats["removed_count"] or stats["replaced_count"]:
                 actions.append(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
@@ -2105,7 +2111,7 @@ def clean_container(
         text = data.decode("utf-8", errors="surrogateescape")
         text, actions = clean_markdown(text)
         if also_layer_a_text:
-            text2, stats = clean_text(text)
+            text2, stats = clean_text(text, **text_options)
             if stats["removed_count"] or stats["replaced_count"]:
                 actions.append(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"

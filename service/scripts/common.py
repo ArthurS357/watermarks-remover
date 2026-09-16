@@ -10,11 +10,65 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+
+def eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def env_flag(name: str) -> bool:
+    """True when env var *name* holds an affirmative value.
+
+    bool(os.environ.get(name)) treats *any* non-empty string as true, so an
+    explicit FOO=0 -- someone deliberately turning a flag off -- would read
+    as on.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Read env var *name* as an int, falling back to *default*.
+
+    These are read at import time, so raising on a typo would abort startup
+    with a bare traceback before anything can report which variable was
+    wrong. Warn and use the documented default instead. *minimum* clamps
+    values that parse but would break the caller -- a semaphore sized 0
+    silently refuses every request rather than failing loudly.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        eprint(f"warning: {name}={raw!r} is not an integer; using {default}")
+        return default
+    if minimum is not None and value < minimum:
+        eprint(f"warning: {name}={value} is below the minimum {minimum}; using {minimum}")
+        return minimum
+    return value
+
+
+def env_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    """Read env var *name* as a float. See env_int for the fallback rationale."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        eprint(f"warning: {name}={raw!r} is not a number; using {default}")
+        return default
+    if minimum is not None and value < minimum:
+        eprint(f"warning: {name}={value} is below the minimum {minimum}; using {minimum}")
+        return minimum
+    return value
+
+
 # Hard caps on attacker-influenced input sizes. Whole-file in-memory
 # processing means a 1 GiB default is a host-memory DoS; keep defaults low.
 # The env overrides remain as an explicit escape hatch.
-MAX_INPUT_BYTES = int(os.environ.get("WATERMARKS_MAX_INPUT_BYTES", str(256 << 20)))
-MAX_STDIN_BYTES = int(os.environ.get("WATERMARKS_MAX_STDIN_BYTES", str(64 << 20)))
+MAX_INPUT_BYTES = env_int("WATERMARKS_MAX_INPUT_BYTES", 256 << 20, minimum=1)
+MAX_STDIN_BYTES = env_int("WATERMARKS_MAX_STDIN_BYTES", 64 << 20, minimum=1)
 
 # Exit codes shared by the audit CLIs. 0 = clean, 1 = actionable findings,
 # 2 = usage/refusal error, 3 = partial scan (some files/URLs failed to
@@ -25,12 +79,8 @@ EXIT_PARTIAL = 3
 # Child-process resource limits (address space / output file size). Applied
 # via preexec_fn so a crafted file cannot make exiftool/c2patool/OpenCV
 # exhaust host memory or fill the disk.
-_CHILD_RLIMIT_AS = int(os.environ.get("WATERMARKS_CHILD_RLIMIT_AS", str(4 << 30)))
-_CHILD_RLIMIT_FSIZE = int(os.environ.get("WATERMARKS_CHILD_RLIMIT_FSIZE", str(2 << 30)))
-
-
-def eprint(*args: object) -> None:
-    print(*args, file=sys.stderr)
+_CHILD_RLIMIT_AS = env_int("WATERMARKS_CHILD_RLIMIT_AS", 4 << 30, minimum=1)
+_CHILD_RLIMIT_FSIZE = env_int("WATERMARKS_CHILD_RLIMIT_FSIZE", 2 << 30, minimum=1)
 
 
 def _reconfigure_stream(stream: Any, errors: str) -> None:

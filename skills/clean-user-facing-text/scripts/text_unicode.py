@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from typing import TypedDict
+
+
+class TextCleanOptions(TypedDict, total=False):
+    """Text-level ``clean_text`` switches that wrappers forward unchanged."""
+
+    nfkc: bool
+    aggressive_homoglyphs: bool
+    strip_em_dash: bool
+
 
 # Format / invisible controls commonly used for steganography or broken pastes.
 STRIP_CODEPOINTS: frozenset[int] = frozenset(
@@ -89,8 +100,21 @@ SPACE_HOMOGLYPHS: dict[int, str] = {
     0x200A: " ",  # hair space
     0x202F: " ",  # narrow no-break space
     0x205F: " ",  # medium mathematical space
+    0x2800: " ",  # braille pattern blank (So, renders as blank width)
     0x3000: " ",  # ideographic space
 }
+
+_BRAILLE_CELLS = range(0x2801, 0x2900)
+
+# Em dash and horizontal bar: the same glyph, and the single strongest
+# punctuation tell in LLM prose. U+2013 en dash stays: it carries numeric
+# ranges (1990 to 2000), which a blanket rule would corrupt.
+_EM_DASH_CPS: frozenset[int] = frozenset({0x2014, 0x2015})
+
+# Spaced form ("a <dash> b") needs the surrounding whitespace absorbed, so it is a
+# span rewrite, not a codepoint swap; [^\S\r\n] covers exotic spaces without
+# crossing a line boundary. Unspaced forms fall through to the per-char pass.
+_EM_DASH_SPACED = re.compile(r"[^\S\r\n]+[\N{EM DASH}\N{HORIZONTAL BAR}]+[^\S\r\n]+")
 
 # Optional confusable Latin lookalikes (aggressive mode only).
 LATIN_CONFUSABLES: dict[int, str] = {
@@ -202,6 +226,22 @@ def _is_noncharacter(cp: int) -> bool:
     return 0xFDD0 <= cp <= 0xFDEF or (cp & 0xFFFE) == 0xFFFE
 
 
+# C0/C1 controls (Cc). Invisible, prohibited in interchange prose, and missed
+# by the Cf catch-all below, so they were an open carrier channel. Tab, LF, CR
+# and FF are real document structure (FF is a page break in plain text and a
+# section marker in source files) and are kept. ESC is kept only as a CSI
+# introducer ("ESC ["), see _decide: stripping it there leaves captured terminal
+# logs full of visible "[31m" residue, while any other ESC (OSC hyperlinks,
+# window titles) is an injection vector.
+_KEPT_CONTROLS: frozenset[int] = frozenset({0x09, 0x0A, 0x0C, 0x0D, 0x1B})
+
+
+def _is_control(cp: int) -> bool:
+    if cp in _KEPT_CONTROLS:
+        return False
+    return cp < 0x20 or cp == 0x7F or 0x80 <= cp <= 0x9F
+
+
 # Bidi / directional format controls (subset of strip set, finer inspect labels)
 _BIDI_CPS: frozenset[int] = frozenset(
     {
@@ -278,6 +318,8 @@ def _is_strip_cp(cp: int) -> bool:
         return True
     if _is_reserved_ignorable(cp):
         return True
+    if _is_control(cp):
+        return True
     return bool(_is_private_use(cp))
 
 
@@ -285,6 +327,8 @@ def _strip_kind(cp: int) -> str:
     """Finer-grained inspect kind for strip-class codepoints."""
     if 0xE0001 <= cp <= 0xE007F:
         return "tag_chars"
+    if _is_control(cp):
+        return "control"
     if _is_noncharacter(cp):
         return "noncharacter"
     if _is_reserved_ignorable(cp):
@@ -457,6 +501,7 @@ def _decide(
     treat_confusables: bool,
     strip_emoji_glue: bool,
     strip_bidi: bool,
+    strip_em_dash: bool,
 ) -> tuple[str, str, str | None]:
     """Classify one input char for both inspect and clean.
 
@@ -510,8 +555,17 @@ def _decide(
             or (next_input is not None and ord(next_input) in script)
         ):
             return ("keep", ch, None)
+    if cp == 0x1B and next_input != "[":
+        return ("strip", "", "control")
     if _is_strip_cp(cp):
         return ("strip", "", _strip_kind(cp))
+    if cp == 0x2800 and (
+        (prev_input is not None and ord(prev_input) in _BRAILLE_CELLS)
+        or (next_input is not None and ord(next_input) in _BRAILLE_CELLS)
+    ):
+        return ("keep", ch, None)
+    if strip_em_dash and cp in _EM_DASH_CPS:
+        return ("replace", "-", "em_dash")
     if normalize_spaces and cp in SPACE_HOMOGLYPHS:
         return ("replace", SPACE_HOMOGLYPHS[cp], "space")
     if treat_confusables and cp in LATIN_CONFUSABLES:
@@ -529,8 +583,9 @@ def _char_label(ch: str) -> str:
 
 
 def _hit_confidence(kind: str) -> str:
-    """Layer A hits are edit-based carriers; space homoglyphs are weaker context."""
-    return "informational" if kind == "space" else "probable"
+    """Layer A hits are edit-based carriers; space homoglyphs and em dashes are
+    weaker context; the latter is a style tell, not a carrier."""
+    return "informational" if kind in ("space", "em_dash") else "probable"
 
 
 @dataclass
@@ -539,7 +594,7 @@ class CharHit:
     char: str
     label: str
     count: int
-    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | noncharacter | reserved_ignorable | space | confusable | other_cf
+    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | noncharacter | reserved_ignorable | control | space | em_dash | confusable | other_cf
     samples: list[int] = field(default_factory=list)  # character offsets
 
 
@@ -591,6 +646,7 @@ def inspect_text(
             treat_confusables=aggressive,
             strip_emoji_glue=strip_emoji_glue,
             strip_bidi=True,
+            strip_em_dash=True,
         )
         if kind is None:
             # Kept; glue (emoji/script joiner/tag) does not advance the
@@ -623,7 +679,7 @@ def inspect_text(
     notes = [
         "Layer A only: invisible/format Unicode and space homoglyphs (edit-based carriers).",
         "Statistical (token-sampling) watermarks are not detectable here; use Layer B rewrite.",
-        "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, private_use, space, confusable, other_cf.",
+        "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, private_use, control, space, em_dash, confusable, other_cf.",
         "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, complete flag tag sequences, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), RTL directional marks/paired embeddings, orthographic Arabic/Syriac Cf marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat, Duployan shorthand, musical beaming). Inspection still reports bidi controls. Use explicit strip flags only after review.",
     ]
     if not hits:
@@ -642,12 +698,16 @@ def clean_text(
     normalize_spaces: bool = True,
     strip_emoji_glue: bool = False,
     strip_bidi: bool = False,
+    strip_em_dash: bool = True,
 ) -> tuple[str, dict]:
     """Return cleaned text and a stats dict."""
     removed: Counter[str] = Counter()
     replaced: Counter[str] = Counter()
     out_chars: list[str] = []
     prev_kept: str | None = None
+    em_dash_spaced = 0
+    if strip_em_dash:
+        text, em_dash_spaced = _EM_DASH_SPACED.subn(", ", text)
     valid_flag_tags = _valid_flag_tag_indices(text)
     valid_bidi_embeddings = _valid_bidi_embedding_indices(text)
 
@@ -663,6 +723,7 @@ def clean_text(
             treat_confusables=aggressive_homoglyphs,
             strip_emoji_glue=strip_emoji_glue,
             strip_bidi=strip_bidi,
+            strip_em_dash=strip_em_dash,
         )
         if action == "keep":
             out_chars.append(out_char)
@@ -677,6 +738,9 @@ def clean_text(
         else:  # strip
             removed[_char_label(ch)] += 1
             # prev_kept unchanged
+
+    if em_dash_spaced:
+        replaced["em_dash_spaced"] += em_dash_spaced
 
     result = "".join(out_chars)
     nfkc_changed = False

@@ -56,6 +56,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from av_meta import clean_av, inspect_av
 from common import (
     MAX_INPUT_BYTES,
+    env_flag,
+    env_float,
+    env_int,
     eprint,
     looks_binary,
     subprocess_preexec_fn,
@@ -66,7 +69,7 @@ from format_dispatch import classify_bytes
 from image_meta import clean_image, inspect_image, run_synthid_score
 from score_stylometry import score_text_stylometry
 from text_detectors import detector_status, run_all_text_detectors, run_text_detectors
-from text_unicode import clean_text, inspect_text
+from text_unicode import TextCleanOptions, clean_text, inspect_text
 
 VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
 
@@ -81,7 +84,7 @@ MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
 # Per-request file count cap for /inspect/batch and /clean/batch. MAX_BODY_BYTES
 # already bounds total payload size; this bounds worst-case CPU/thread time from
 # a request packing many tiny files into one call.
-MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
+MAX_BATCH_FILES = env_int("WATERMARKS_MAX_BATCH_FILES", 50, minimum=1)
 
 # ThreadingHTTPServer spawns one thread per connection with no cap of its own.
 # Each in-flight POST can briefly hold several copies of its payload in
@@ -99,17 +102,18 @@ MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
 # digit GB, which fits compose.yaml's wr-core mem_limit. Raise both
 # WATERMARKS_MAX_CONCURRENT_REQUESTS and the container's mem_limit together
 # if higher throughput is needed on a host with the memory to back it.
-MAX_CONCURRENT_REQUESTS = int(os.environ.get("WATERMARKS_MAX_CONCURRENT_REQUESTS", "4"))
+MAX_CONCURRENT_REQUESTS = env_int("WATERMARKS_MAX_CONCURRENT_REQUESTS", 4, minimum=1)
 _REQUEST_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
 
 # Seconds a connection may sit idle (no request line/headers/body sent) before
 # the handler drops it. Mitigates a slowloris-style client that opens a
 # connection and then trickles bytes to hold a thread open indefinitely.
-REQUEST_TIMEOUT_SECONDS = float(os.environ.get("WATERMARKS_SERVER_REQUEST_TIMEOUT", "30"))
+REQUEST_TIMEOUT_SECONDS = env_float("WATERMARKS_SERVER_REQUEST_TIMEOUT", 30.0)
 
 ALLOWED_CLEAN_OPTIONS = {
     "nfkc": bool,
     "aggressive_homoglyphs": bool,
+    "keep_em_dash": bool,
     "keep_non_ai_metadata": bool,
     "also_layer_a_text": bool,
     "remove_pixel": str,
@@ -127,10 +131,16 @@ def _json_ok(payload: dict[str, Any]) -> bytes:
 # exiftool treats `--version` as an unknown option and prints usage instead.
 _VERSION_FLAG = {"c2patool": "--version", "exiftool": "-ver", "qpdf": "--version"}
 
+# Optional tools /readyz reports on, and how much of a version banner to keep.
+# Some tools print a multi-line banner; one truncated line identifies a build
+# without turning the response into a log dump.
+_OPTIONAL_TOOLS = ("c2patool", "exiftool", "qpdf")
+_MAX_VERSION_CHARS = 80
+
 
 @cache
-def _tool_usable(cmd: str) -> bool:
-    """True only when the tool is on PATH *and* can actually execute.
+def _tool_probe(cmd: str) -> tuple[bool, str | None]:
+    """Run *cmd*'s version flag once; return (usable, version string or None).
 
     `which` alone answers the wrong question. A binary built for another
     architecture sits on PATH and still dies before main() -- the published
@@ -138,11 +148,16 @@ def _tool_usable(cmd: str) -> bool:
     carrying the x86_64-only c2patool release. Advertising that as available
     is what lets a probe which never ran read as a clean verdict downstream.
 
+    The version string is the probe's own first output line, capped: /readyz
+    reports it so an operator can tell "installed but ancient" from "missing"
+    without shelling into the host. The tool's filesystem path is deliberately
+    *not* returned -- /readyz is unauthenticated, and a path leaks host layout.
+
     Cached: a container's tool set cannot change while the process lives.
     """
     path = which(cmd)
     if not path:
-        return False
+        return False, None
     try:
         r = subprocess.run(
             [path, _VERSION_FLAG.get(cmd, "--version")],
@@ -153,8 +168,16 @@ def _tool_usable(cmd: str) -> bool:
             check=False,
         )
     except Exception:
-        return False
-    return r.returncode == 0
+        return False, None
+    if r.returncode != 0:
+        return False, None
+    lines = (r.stdout or r.stderr or "").strip().splitlines()
+    return True, (lines[0][:_MAX_VERSION_CHARS] if lines else None)
+
+
+def _tool_usable(cmd: str) -> bool:
+    """True only when the tool is on PATH *and* can actually execute."""
+    return _tool_probe(cmd)[0]
 
 
 def _degradation_warnings(kind: str, fmt: str | None) -> list[str]:
@@ -193,11 +216,7 @@ def _degradation_warnings(kind: str, fmt: str | None) -> list[str]:
 def capabilities() -> dict[str, Any]:
     return {
         "version": VERSION,
-        "tools": {
-            "c2patool": _tool_usable("c2patool"),
-            "exiftool": _tool_usable("exiftool"),
-            "qpdf": _tool_usable("qpdf"),
-        },
+        "tools": {t: _tool_usable(t) for t in _OPTIONAL_TOOLS},
         "pixel_backends": {
             "ctrlregen": bool(os.environ.get("NOAI_WATERMARK_DIR")),
             "diffusion": bool(os.environ.get("MARKDIFFUSION_DIR")),
@@ -211,6 +230,90 @@ def capabilities() -> dict[str, Any]:
         "harnesses": {
             "markllm": bool(os.environ.get("MARKLLM_DIR")),
         },
+    }
+
+
+# Env var naming each pixel backend's checkout root, keyed by the name
+# /capabilities already uses for it.
+_PIXEL_BACKEND_ENV = {"ctrlregen": "NOAI_WATERMARK_DIR", "diffusion": "MARKDIFFUSION_DIR"}
+
+
+def _pixel_backend_status() -> dict[str, Any]:
+    """Per-backend configuration status for /readyz, with its own honesty label.
+
+    /capabilities answers this with `bool(os.environ.get(...))` -- "the env var
+    is set" -- which says nothing about whether the checkout is even on disk.
+    This goes one step further and confirms the directory exists, which is the
+    *same* check the cleaning path itself makes before invoking a backend (see
+    run_ctrlregen / run_markdiffusion in image_meta.py). So `configured: true`
+    means exactly "the runtime would get past its own precondition", no more.
+
+    It stops there on purpose. Proving a backend really works means importing
+    torch and loading model weights -- seconds of CPU and gigabytes of RAM on
+    an endpoint served before the auth gate. `verified: false` says so in the
+    response rather than letting a client read `configured` as a guarantee.
+
+    The configured path is never returned: /readyz is unauthenticated and a
+    checkout path leaks host layout. A broken config is reported as a reason
+    string instead.
+    """
+    status: dict[str, Any] = {
+        "verified": False,
+        "note": (
+            "configured = env var set and its directory exists, the same precondition "
+            "the cleaning path checks; heavy dependencies (torch, model weights) are "
+            "not imported here, so a configured backend can still fail at run time"
+        ),
+    }
+    for name, env in _PIXEL_BACKEND_ENV.items():
+        raw = os.environ.get(env, "").strip()
+        if not raw:
+            status[name] = {"configured": False, "reason": "not configured"}
+        elif Path(raw).expanduser().is_dir():
+            status[name] = {"configured": True}
+        else:
+            # Deliberately without the path -- see the docstring.
+            status[name] = {"configured": False, "reason": "configured directory not found"}
+    return status
+
+
+def readiness() -> dict[str, Any]:
+    """Unauthenticated readiness + diagnosis: what this build can actually do.
+
+    Distinct from /health (is the process up?) and from /capabilities (the
+    full authenticated inventory, including heavy backends). This answers the
+    one question a client has before it promises a user a result: which
+    cleaning layers are backed by a working toolchain right now.
+
+    "degraded" never means "refuse" -- every layer below still runs without
+    its optional tool, just less thoroughly (see _degradation_warnings). It
+    means a caller should downgrade what it claims about the outcome.
+
+    Deliberately narrow: version, layer names, and optional-tool status. No
+    filesystem paths, no environment values, no API-key state -- this is
+    served before the auth gate.
+    """
+    tools: dict[str, Any] = {}
+    for name in _OPTIONAL_TOOLS:
+        usable, version = _tool_probe(name)
+        tools[name] = {"available": True, "version": version} if usable else {"available": False}
+
+    pixel = _pixel_backend_status()
+
+    # Layers that need no optional tool at all: pure-Python Unicode scrubbing,
+    # stylometric text scoring, and the in-process metadata strip.
+    layers = ["unicode_invisible", "statistical_text", "metadata"]
+    if any(b["configured"] for b in pixel.values() if isinstance(b, dict)):
+        layers.append("pixel_removal")
+
+    degraded = [name for name, info in tools.items() if not info["available"]]
+    return {
+        "ok": True,
+        "status": "degraded" if degraded else "ok",
+        "service": {"name": "watermarks-remover", "version": VERSION},
+        "capabilities": layers,
+        "tools": tools,
+        "pixel_backends": pixel,
     }
 
 
@@ -274,6 +377,62 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
             },
         }
     },
+    "/readyz": {
+        "get": {
+            "summary": "Readiness and diagnosis: supported layers and optional-tool status",
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "status": _schema(type="string", enum=["ok", "degraded"]),
+                        "service": _schema(
+                            type="object",
+                            properties={
+                                "name": _schema(type="string"),
+                                "version": _schema(type="string"),
+                            },
+                        ),
+                        "capabilities": _schema(type="array", items=_schema(type="string")),
+                        "tools": _schema(
+                            type="object",
+                            properties={
+                                k: _schema(
+                                    type="object",
+                                    properties={
+                                        "available": _schema(type="boolean"),
+                                        "version": _schema(type="string"),
+                                    },
+                                )
+                                for k in _OPTIONAL_TOOLS
+                            },
+                        ),
+                        "pixel_backends": _schema(
+                            type="object",
+                            properties={
+                                "verified": _schema(
+                                    type="boolean",
+                                    enum=[False],
+                                    description="Always false: presence is checked, function is not",
+                                ),
+                                "note": _schema(type="string"),
+                                **{
+                                    k: _schema(
+                                        type="object",
+                                        properties={
+                                            "configured": _schema(type="boolean"),
+                                            "reason": _schema(type="string"),
+                                        },
+                                    )
+                                    for k in _PIXEL_BACKEND_ENV
+                                },
+                            },
+                        ),
+                    },
+                )
+            },
+        }
+    },
     "/capabilities": {
         "get": {
             "summary": "Which optional tools and heavy backends are available",
@@ -285,9 +444,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                         "version": _schema(type="string"),
                         "tools": _schema(
                             type="object",
-                            properties={
-                                k: _schema(type="boolean") for k in ("c2patool", "exiftool", "qpdf")
-                            },
+                            properties={k: _schema(type="boolean") for k in _OPTIONAL_TOOLS},
                         ),
                         "pixel_backends": _schema(
                             type="object",
@@ -558,6 +715,10 @@ _COMMON_ERRORS = {
 }
 
 
+# Served before the auth gate in Handler.do_GET; the spec must say so.
+_PUBLIC_PATHS = ("/health", "/readyz")
+
+
 def openapi_spec() -> dict[str, Any]:
     paths: dict[str, Any] = {}
     for path, ops in _OPENAPI_PATHS.items():
@@ -572,9 +733,9 @@ def openapi_spec() -> dict[str, Any]:
                 "summary": op["summary"],
                 "responses": responses,
                 **((op.get("requestBody") and {"requestBody": op["requestBody"]}) or {}),
-                # /health never requires auth (see Handler.do_GET); override the
-                # global security requirement set below so the spec matches.
-                **({"security": []} if path == "/health" else {}),
+                # /health and /readyz never require auth (see Handler.do_GET);
+                # override the global security requirement set below to match.
+                **({"security": []} if path in _PUBLIC_PATHS else {}),
             }
 
     spec: dict[str, Any] = {
@@ -820,6 +981,11 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> CleanPayl
             "(e.g. notes.txt) or a supported image/container name"
         )
 
+    text_options: TextCleanOptions = {
+        "nfkc": bool(options.get("nfkc")),
+        "aggressive_homoglyphs": bool(options.get("aggressive_homoglyphs")),
+        "strip_em_dash": not bool(options.get("keep_em_dash")),
+    }
     with tempfile.TemporaryDirectory(prefix="wm-clean-") as tmp:
         tmpdir = Path(tmp)
         src = _tmp_path(tmpdir, name or "input")
@@ -835,11 +1001,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> CleanPayl
             detector_reports: dict[str, Any] = {}
             if detect_before:
                 detector_reports["before"] = run_text_detectors(text)
-            cleaned, stats = clean_text(
-                text,
-                nfkc=bool(options.get("nfkc")),
-                aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
-            )
+            cleaned, stats = clean_text(text, **text_options)
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
             cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
@@ -905,6 +1067,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> CleanPayl
                 dest,
                 fmt=container_fmt,
                 also_layer_a_text=bool(options.get("also_layer_a_text", True)),
+                **text_options,
             )
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "container", **result}
@@ -970,6 +1133,13 @@ class Handler(BaseHTTPRequestHandler):
         # unauthenticated to decide whether the service is even reachable.
         if path == "/health":
             self._respond(HTTPStatus.OK, {"ok": True, "version": VERSION})
+            return
+        # /readyz is public for the same reason: a client deciding whether the
+        # service can do the job it is about to be asked for must be able to
+        # ask before it has a token. It reports no more than /health plus
+        # optional-tool presence (see readiness()).
+        if path == "/readyz":
+            self._respond(HTTPStatus.OK, readiness())
             return
         if not self._authorized():
             self._respond(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
@@ -1105,16 +1275,6 @@ class Handler(BaseHTTPRequestHandler):
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
-def _flag_env(name: str) -> bool:
-    """Parse a boolean env var the same way rewrite_text.py does.
-
-    bool(os.environ.get(name)) treats *any* non-empty string as true, so
-    WATERMARKS_SERVER_ALLOW_INSECURE_BIND=0 -- someone's explicit attempt to
-    disable it -- would otherwise enable it.
-    """
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -> bool:
     """True when *host* is non-loopback, no API key is set, and no opt-out was given.
 
@@ -1129,13 +1289,11 @@ def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default=os.environ.get("WATERMARKS_SERVER_HOST", "127.0.0.1"))
-    p.add_argument(
-        "--port", type=int, default=int(os.environ.get("WATERMARKS_SERVER_PORT", "8765"))
-    )
+    p.add_argument("--port", type=int, default=env_int("WATERMARKS_SERVER_PORT", 8765))
     p.add_argument(
         "--allow-insecure-bind",
         action="store_true",
-        default=_flag_env("WATERMARKS_SERVER_ALLOW_INSECURE_BIND"),
+        default=env_flag("WATERMARKS_SERVER_ALLOW_INSECURE_BIND"),
         help=(
             "allow binding a non-loopback host with no API key set (default: refuse). "
             "Only pass this when the real access boundary is elsewhere, e.g. a container "

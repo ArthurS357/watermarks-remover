@@ -44,6 +44,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from common import env_float
 from detect_gumbel import DEFAULT_THRESHOLD, DEFAULT_WINDOW, detect_text
 
 DEFAULT_MARKLLM_SCHEME = "kgw"
@@ -56,13 +57,6 @@ class TextDetector(Protocol):
     def available(self) -> bool: ...
 
     def detect(self, text: str) -> dict[str, Any]: ...
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
 
 
 def _worker_port() -> int | None:
@@ -190,7 +184,7 @@ class MarkLLMTextDetector:
         timeout = (
             self._timeout
             if self._timeout is not None
-            else _env_float("WATERMARKS_MARKLLM_TIMEOUT", DEFAULT_MARKLLM_TIMEOUT)
+            else env_float("WATERMARKS_MARKLLM_TIMEOUT", DEFAULT_MARKLLM_TIMEOUT)
         )
 
         # Reuse a resident serve worker (WATERMARKS_MARKLLM_PORT) when one is

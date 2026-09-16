@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 from common import (
     c2patool_probe_note,
     classify_finding_confidence,
+    env_float,
+    env_int,
     eprint,
     guard_file_size,
     safe_arg,
@@ -61,8 +63,8 @@ DEFAULT_SYNTHID_SCORER_TIMEOUT = 60.0
 # CtrlRegen is torch-based and needs far more address space than the stdlib
 # parsers. The invoking clean_image.py subprocess applies these higher,
 # env-overridable caps instead of the default child limits in common.py.
-_CTRLREGEN_RLIMIT_AS = int(os.environ.get("WATERMARKS_CTRLREGEN_RLIMIT_AS", str(32 << 30)))
-_CTRLREGEN_RLIMIT_FSIZE = int(os.environ.get("WATERMARKS_CTRLREGEN_RLIMIT_FSIZE", str(2 << 30)))
+_CTRLREGEN_RLIMIT_AS = env_int("WATERMARKS_CTRLREGEN_RLIMIT_AS", 32 << 30, minimum=1)
+_CTRLREGEN_RLIMIT_FSIZE = env_int("WATERMARKS_CTRLREGEN_RLIMIT_FSIZE", 2 << 30, minimum=1)
 
 
 def ctrlregen_preexec_fn() -> None:
@@ -1492,10 +1494,7 @@ def run_synthid_score(
     scorer_url = os.environ.get("WATERMARKS_SYNTHID_SCORER_URL", "").strip()
     if scorer_url:
         api_key = os.environ.get("WATERMARKS_SYNTHID_SCORER_API_KEY", "").strip()
-        try:
-            timeout = float(os.environ.get("WATERMARKS_SYNTHID_SCORER_TIMEOUT", "60"))
-        except ValueError:
-            timeout = DEFAULT_SYNTHID_SCORER_TIMEOUT
+        timeout = env_float("WATERMARKS_SYNTHID_SCORER_TIMEOUT", DEFAULT_SYNTHID_SCORER_TIMEOUT)
         return _synthid_score_http(path, scorer_url, api_key, timeout)
     if upstream_dir is None:
         upstream_dir = os.environ.get("REVERSE_SYNTHID_DIR")

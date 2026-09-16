@@ -19,6 +19,7 @@
 !/.env.example
 !/.gitignore
 !/.pre-commit-hooks.yaml
+!/AI_INTEGRATION.md
 !/CODE_OF_CONDUCT.md
 !/compose-check.sh
 !/compose.yaml

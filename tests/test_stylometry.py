@@ -89,6 +89,20 @@ def test_ai_phrase_scanner():
     assert "a testament to" in matched_labels
 
 
+def test_direct_ai_self_disclosure_markers():
+    text = (
+        "As a large language model, I cannot access real-time data. "
+        "I am an AI and my knowledge cutoff limits this. "
+        "I apologize for the confusion."
+    )
+    labels = [m.phrase for m in scan_ai_phrases(text)]
+    assert "as a large language model / AI assistant" in labels
+    assert "I am an AI / language model" in labels
+    assert "my training data / knowledge cutoff" in labels
+    assert "I cannot access real-time/the internet" in labels
+    assert "I apologize for the confusion" in labels
+
+
 def test_short_text_floor():
     short_text = "This is a very short text with only nine words."
     report = score_text_stylometry(short_text)

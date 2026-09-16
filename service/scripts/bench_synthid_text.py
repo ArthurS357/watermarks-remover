@@ -48,7 +48,7 @@ from urllib.parse import urlparse
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from common import eprint  # noqa: E402
+from common import env_float, eprint  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
@@ -68,9 +68,9 @@ DEFAULT_SCHEME = "synthid"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # MarkLLM generation/detection can take minutes on CPU (model load per call).
-WATERMARK_TIMEOUT = float(os.environ.get("WATERMARKS_BENCH_WATERMARK_TIMEOUT", "900"))
-DETECT_TIMEOUT = float(os.environ.get("WATERMARKS_MARKLLM_TIMEOUT", "600"))
-REWRITE_TIMEOUT = float(os.environ.get("WATERMARKS_REWRITE_TIMEOUT", "300"))
+WATERMARK_TIMEOUT = env_float("WATERMARKS_BENCH_WATERMARK_TIMEOUT", 900.0)
+DETECT_TIMEOUT = env_float("WATERMARKS_MARKLLM_TIMEOUT", 600.0)
+REWRITE_TIMEOUT = env_float("WATERMARKS_REWRITE_TIMEOUT", 300.0)
 
 
 def parse_variants(spec: str) -> list[tuple[str, int]]:
@@ -1185,7 +1185,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--markllm-timeout",
         type=float,
-        default=float(os.environ.get("WATERMARKS_MARKLLM_TIMEOUT", "600")),
+        default=DETECT_TIMEOUT,
     )
     p.add_argument(
         "--rewrite-backend",
