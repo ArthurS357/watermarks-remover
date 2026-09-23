@@ -1,4 +1,4 @@
-.PHONY: test lint format lint-fix smoke smoke-synthid bootstrap-synthid docker-synthid-build docker-synthid-help \
+.PHONY: test test-cov-subprocess lint format lint-fix smoke smoke-synthid bootstrap-synthid docker-synthid-build docker-synthid-help \
 	smoke-ctrlregen bootstrap-ctrlregen docker-ctrlregen-build docker-ctrlregen-help \
 	smoke-markllm bootstrap-markllm docker-markllm-build docker-markllm-help \
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
@@ -11,6 +11,14 @@ PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else e
 
 test:
 	$(PYTHON) -m pytest
+
+# Opt-in: also measures CLI entry points exercised via subprocess (clean_text.py,
+# inspect_file.py, score_synthid.py, ...), which plain `make test` cannot see.
+# See .coveragerc and service/scripts/sitecustomize.py.
+test-cov-subprocess:
+	COVERAGE_PROCESS_START=.coveragerc $(PYTHON) -m coverage run -m pytest -q
+	$(PYTHON) -m coverage combine
+	$(PYTHON) -m coverage report -m
 
 lint:
 	$(PYTHON) -m ruff check service tests
