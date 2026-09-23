@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -58,10 +59,8 @@ def _configure_stdio() -> None:
     ):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 reconfigure(encoding="utf-8", errors=errors)
-            except (OSError, ValueError):
-                pass
 
 
 _configure_stdio()
@@ -159,10 +158,8 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(temporary)
-        except OSError:
-            pass
         raise
 
 

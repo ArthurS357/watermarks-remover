@@ -29,9 +29,7 @@ def _remove_path(path: Path) -> None:
 
 def _stage(skills_dir: Path) -> tuple[Path, Path]:
     skills_dir.mkdir(parents=True, exist_ok=True)
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=f".{SKILL_NAME}.staging.", dir=skills_dir)
-    )
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{SKILL_NAME}.staging.", dir=skills_dir))
     staged_skill = staging_root / SKILL_NAME
     try:
         shutil.copytree(SOURCE, staged_skill)
@@ -56,9 +54,7 @@ def _install(destination: Path, force: bool) -> tuple[bool, Path | None]:
     backup: Path | None = None
     try:
         if _present(destination):
-            backup = destination.with_name(
-                f"{destination.name}.backup.{uuid.uuid4().hex[:12]}"
-            )
+            backup = destination.with_name(f"{destination.name}.backup.{uuid.uuid4().hex[:12]}")
             os.replace(destination, backup)
         try:
             os.replace(staged_skill, destination)
@@ -83,8 +79,7 @@ def main() -> int:
     args = parser.parse_args()
 
     cursor_home = Path(
-        args.cursor_home
-        or os.environ.get("CURSOR_HOME", Path.home() / ".cursor")
+        args.cursor_home or os.environ.get("CURSOR_HOME", Path.home() / ".cursor")
     ).expanduser()
     destination = cursor_home / "skills" / SKILL_NAME
 
