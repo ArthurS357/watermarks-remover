@@ -289,6 +289,47 @@ def test_openapi_spec_describes_request_bodies(conn):
     assert "file" in inspect["requestBody"]["content"]["application/json"]["schema"]["properties"]
 
 
+def _ok_schema(spec: dict, path: str, method: str) -> dict:
+    return spec["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+
+
+def test_openapi_spec_error_codes_match_the_handlers(monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    spec = server.openapi_spec()
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            codes = set(op["responses"])
+            # The concurrency cap (503) gates POST only; GET is never throttled.
+            assert ("503" in codes) == (method == "post"), (path, method)
+            # Public paths answer before the auth gate, so they can never 401.
+            assert ("401" in codes) == (path not in server._PUBLIC_PATHS), (path, method)
+
+
+def test_openapi_spec_response_fields_match_the_handlers():
+    spec = server.openapi_spec()
+    # _inspect_payload answers kind "unknown" for an unrecognized format.
+    assert "unknown" in _ok_schema(spec, "/inspect", "post")["properties"]["kind"]["enum"]
+    # _detect_payload adds "report" for av/container kinds (DetectPayload).
+    assert "report" in _ok_schema(spec, "/detect", "post")["properties"]
+
+
+def test_detect_kind_for_unrecognized_bytes_is_declared_in_the_spec(conn):
+    status, body = _post(conn, "/detect", {"file": _b64(b"\x00\x01\x02garbage"), "name": "x.bin"})
+    assert status == 200
+    spec = server.openapi_spec()
+    assert body["kind"] in _ok_schema(spec, "/detect", "post")["properties"]["kind"]["enum"]
+    item = _ok_schema(spec, "/detect/batch", "post")["properties"]["results"]["items"]
+    assert body["kind"] in item["properties"]["kind"]["enum"]
+
+
+def test_openapi_spec_is_valid_with_and_without_auth(monkeypatch):
+    from openapi_spec_validator import validate
+
+    for key in ("", "sekret"):
+        monkeypatch.setattr(server, "API_KEY", key)
+        validate(server.openapi_spec())
+
+
 def test_openapi_spec_reflects_auth(conn, monkeypatch):
     monkeypatch.setattr(server, "API_KEY", "sekret")
     conn.request("GET", "/openapi.json", headers={"Authorization": "Bearer sekret"})
@@ -490,6 +531,39 @@ def test_auth_required(conn, monkeypatch):
     resp.read()
 
 
+def test_get_requires_auth_when_key_set(conn, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    for path in ("/capabilities", "/openapi.json"):
+        status, body = _get(conn, path)
+        assert status == 401, path
+        assert body == {"ok": False, "error": "unauthorized"}
+    conn.request("GET", "/capabilities", headers={"Authorization": "Bearer wrong"})
+    resp = conn.getresponse()
+    assert resp.status == 401
+    resp.read()
+
+
+def test_non_ascii_authorization_is_401_not_a_dropped_connection(conn, monkeypatch):
+    # hmac.compare_digest raises TypeError on non-ASCII str; that used to kill
+    # the handler and drop the connection instead of answering 401.
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    conn.request("GET", "/capabilities", headers={"Authorization": "Bearer s\xe9kret"})
+    resp = conn.getresponse()
+    assert resp.status == 401
+    resp.read()
+
+
+def test_non_decimal_content_length_is_400_not_a_dropped_connection(conn, monkeypatch):
+    # "\xb2" (superscript two) passes str.isdigit() but int() rejects it.
+    monkeypatch.setattr(server, "API_KEY", "")
+    conn.putrequest("POST", "/inspect")
+    conn.putheader("Content-Length", "\xb2")
+    conn.endheaders(b"{}")
+    resp = conn.getresponse()
+    assert resp.status == 400
+    resp.read()
+
+
 def test_health_is_never_authenticated(conn, monkeypatch):
     monkeypatch.setattr(server, "API_KEY", "sekret")
     status, body = _get(conn, "/health")
@@ -529,6 +603,23 @@ def test_main_refuses_insecure_bind_before_starting_server(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["server.py", "--host", "0.0.0.0"])  # noqa: S104
     assert server.main() == 2
     assert "refusing to bind" in capsys.readouterr().err
+
+
+def test_main_refuses_a_non_ascii_api_key(monkeypatch, capsys):
+    # A bearer token is ASCII (RFC 6750 b64token); anything else could never
+    # match a client reliably, and a surrogate-escaped key fails to encode on
+    # every request. Refuse at startup, without echoing the key.
+    monkeypatch.setattr(server, "API_KEY", "s\xe9kret")
+    monkeypatch.setattr(sys, "argv", ["server.py"])
+
+    def _must_not_bind(*_args, **_kwargs):
+        raise AssertionError("main() bound a socket despite a non-ASCII API key")
+
+    monkeypatch.setattr(server, "ThreadingHTTPServer", _must_not_bind)
+    assert server.main() == 2
+    err = capsys.readouterr().err
+    assert "ASCII" in err
+    assert "s\xe9kret" not in err
 
 
 def test_main_allows_insecure_bind_via_env_var(monkeypatch):
@@ -589,6 +680,18 @@ def test_env_int_clamps_below_minimum(monkeypatch, capsys):
 def test_env_int_accepts_valid_override(monkeypatch):
     monkeypatch.setenv("WATERMARKS_TEST_INT", "9")
     assert common.env_int("WATERMARKS_TEST_INT", 4, minimum=1) == 9
+
+
+def test_env_float_falls_back_on_malformed_value(monkeypatch, capsys):
+    monkeypatch.setenv("WATERMARKS_TEST_FLOAT", "thirty")
+    assert common.env_float("WATERMARKS_TEST_FLOAT", 30.0) == 30.0
+    assert "WATERMARKS_TEST_FLOAT" in capsys.readouterr().err
+
+
+def test_env_float_clamps_below_minimum(monkeypatch, capsys):
+    monkeypatch.setenv("WATERMARKS_TEST_FLOAT", "-1")
+    assert common.env_float("WATERMARKS_TEST_FLOAT", 30.0, minimum=0.5) == 0.5
+    assert "minimum" in capsys.readouterr().err
 
 
 def test_request_semaphore_is_never_sized_zero():

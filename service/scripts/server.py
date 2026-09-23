@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from av_meta import clean_av, inspect_av
 from common import (
+    LOOPBACK_HOSTS,
     MAX_INPUT_BYTES,
     env_flag,
     env_float,
@@ -510,7 +511,9 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                     type="object",
                     properties={
                         "ok": _schema(type="boolean"),
-                        "kind": _schema(type="string", enum=["text", "image", "container", "av"]),
+                        "kind": _schema(
+                            type="string", enum=["text", "image", "container", "av", "unknown"]
+                        ),
                         "suspicious": _schema(type="boolean"),
                         "report": _schema(type="object"),
                     },
@@ -552,8 +555,13 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                     type="object",
                     properties={
                         "ok": _schema(type="boolean"),
-                        "kind": _schema(type="string", enum=["text", "image", "container", "av"]),
+                        "kind": _schema(
+                            type="string", enum=["text", "image", "container", "av", "unknown"]
+                        ),
                         "detections": _schema(type="array", items=_schema(type="object")),
+                        "report": _schema(
+                            type="object", description="av, container and unknown kinds only"
+                        ),
                     },
                 )
             },
@@ -630,7 +638,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                                     "ok": _schema(type="boolean"),
                                     "kind": _schema(
                                         type="string",
-                                        enum=["text", "image", "container", "av"],
+                                        enum=["text", "image", "container", "av", "unknown"],
                                     ),
                                     "detections": _schema(
                                         type="array", items=_schema(type="object")
@@ -713,6 +721,11 @@ _COMMON_ERRORS = {
         "content": {"application/json": {"schema": _ERROR_SCHEMA}},
     },
 }
+# Handler.do_POST's concurrency cap; GET is never gated.
+_BUSY_ERROR = {
+    "description": "Too many concurrent POST requests; back off and retry",
+    "content": {"application/json": {"schema": _ERROR_SCHEMA}},
+}
 
 
 # Served before the auth gate in Handler.do_GET; the spec must say so.
@@ -724,6 +737,10 @@ def openapi_spec() -> dict[str, Any]:
     for path, ops in _OPENAPI_PATHS.items():
         for method, op in ops.items():
             responses = dict(_COMMON_ERRORS)
+            if path in _PUBLIC_PATHS:
+                del responses["401"]
+            if method == "post":
+                responses["503"] = _BUSY_ERROR
             for status, body in op["responses"].items():
                 responses[status] = {
                     "description": "Success",
@@ -873,7 +890,7 @@ class DetectPayload(TypedDict):
     ok: bool
     kind: str
     detections: list[dict[str, Any]]
-    report: NotRequired[dict[str, Any]]  # only present for av/container kinds
+    report: NotRequired[dict[str, Any]]  # only present for av/container/unknown kinds
 
 
 class CleanPayload(TypedDict):
@@ -1100,11 +1117,13 @@ class Handler(BaseHTTPRequestHandler):
         if not API_KEY:
             return True
         header = self.headers.get("Authorization", "")
-        return hmac.compare_digest(header, f"Bearer {API_KEY}")
+        # Bytes: compare_digest raises TypeError on non-ASCII str instead of False.
+        return hmac.compare_digest(header.encode(), f"Bearer {API_KEY}".encode())
 
     def _read_json(self) -> dict[str, Any] | None:
         raw = self.headers.get("Content-Length")
-        if raw is None or not raw.isdigit():
+        # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.
+        if raw is None or not raw.isdecimal():
             return None
         length = int(raw)
         if length > MAX_BODY_BYTES:
@@ -1185,7 +1204,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if body is None:
             raw_len = self.headers.get("Content-Length")
-            oversized = raw_len is not None and raw_len.isdigit() and int(raw_len) > MAX_BODY_BYTES
+            oversized = (
+                raw_len is not None and raw_len.isdecimal() and int(raw_len) > MAX_BODY_BYTES
+            )
             self._respond(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE if oversized else HTTPStatus.BAD_REQUEST,
                 {"ok": False, "error": "invalid request body"},
@@ -1272,9 +1293,6 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
 
-_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
-
-
 def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -> bool:
     """True when *host* is non-loopback, no API key is set, and no opt-out was given.
 
@@ -1283,7 +1301,7 @@ def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -
     main() so the decision is unit-testable without touching argparse or a
     real socket.
     """
-    return host not in _LOOPBACK_HOSTS and not api_key and not allow_insecure_bind
+    return host not in LOOPBACK_HOSTS and not api_key and not allow_insecure_bind
 
 
 def main() -> int:
@@ -1307,6 +1325,11 @@ def main() -> int:
         print(VERSION)
         return 0
 
+    if not API_KEY.isascii():
+        # Bearer tokens are ASCII (RFC 6750); never echo the key itself.
+        eprint("error: WATERMARKS_SERVER_API_KEY must be ASCII")
+        return 2
+
     if _refuses_insecure_bind(args.host, API_KEY, args.allow_insecure_bind):
         eprint(
             f"error: refusing to bind {args.host} with no API key set — this would expose "
@@ -1317,7 +1340,7 @@ def main() -> int:
         )
         return 2
 
-    if args.host not in _LOOPBACK_HOSTS:
+    if args.host not in LOOPBACK_HOSTS:
         eprint(f"warning: binding {args.host} — intended for a trusted network only")
     if API_KEY:
         eprint("API key required for requests")
