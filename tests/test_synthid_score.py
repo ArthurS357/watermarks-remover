@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import http.client
+import http.server
 import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +19,7 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import image_meta
+import synthid_score_server
 from image_meta import ImageInspectReport, run_synthid_score
 
 SCORE_SCRIPT = SCRIPTS / "score_synthid.py"
@@ -220,3 +224,165 @@ def test_synthid_score_http_read_error_omits_full_path(tmp_path):
     assert "shot.png" in result["error"]
     assert str(tmp_path) not in result["error"]
     assert "server-temp-dir" not in result["error"]
+
+
+def _serve(handler: type[http.server.BaseHTTPRequestHandler]) -> http.server.ThreadingHTTPServer:
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_synthid_score_http_refuses_redirect_and_never_sends_key(tmp_path):
+    """urllib re-sends Authorization on 301/302/303; the key must not follow."""
+    captured: dict = {}
+
+    class Collector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            captured["auth"] = self.headers.get("Authorization")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"available": true}')
+
+        def log_message(self, *_args):
+            pass
+
+    collector = _serve(Collector)
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{collector.server_address[1]}/x")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    redirector = _serve(Redirector)
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    try:
+        result = image_meta._synthid_score_http(
+            img, f"http://127.0.0.1:{redirector.server_address[1]}", "sekret", 5.0
+        )
+    finally:
+        for srv in (collector, redirector):
+            srv.shutdown()
+            srv.server_close()
+    assert captured == {}, "redirect target received the scorer request (key leak)"
+    assert result["available"] is False
+
+
+@pytest.fixture
+def sidecar(monkeypatch):
+    monkeypatch.setattr(synthid_score_server, "API_KEY", "")
+    srv = _serve(synthid_score_server.Handler)
+    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    yield conn
+    conn.close()
+    srv.shutdown()
+    srv.server_close()
+
+
+def _status(conn: http.client.HTTPConnection, headers: dict[str, str]) -> int:
+    conn.request("GET", "/health", headers=headers)
+    resp = conn.getresponse()
+    resp.read()
+    return resp.status
+
+
+def test_sidecar_auth_gate(sidecar, monkeypatch):
+    monkeypatch.setattr(synthid_score_server, "API_KEY", "k")
+    assert _status(sidecar, {}) == 401
+    assert _status(sidecar, {"Authorization": "Bearer wrong"}) == 401
+    # Non-ASCII used to raise TypeError in compare_digest and drop the connection.
+    assert _status(sidecar, {"Authorization": "Bearer \xe9"}) == 401
+    assert _status(sidecar, {"Authorization": "Bearer k"}) == 200
+
+
+def test_sidecar_non_decimal_content_length_is_400(sidecar):
+    sidecar.putrequest("POST", "/score")
+    sidecar.putheader("Content-Length", "\xb2")
+    sidecar.endheaders(b"{}")
+    resp = sidecar.getresponse()
+    resp.read()
+    assert resp.status == 400
+
+
+def test_sidecar_refuses_a_non_ascii_api_key(monkeypatch, capsys):
+    monkeypatch.setattr(synthid_score_server, "API_KEY", "\xe9")
+    monkeypatch.setattr(sys, "argv", ["synthid_score_server.py"])
+
+    def _must_not_bind(*_args, **_kwargs):
+        raise AssertionError("main() bound a socket despite a non-ASCII API key")
+
+    monkeypatch.setattr(synthid_score_server, "ThreadingHTTPServer", _must_not_bind)
+    assert synthid_score_server.main() == 2
+    assert "ASCII" in capsys.readouterr().err
+
+
+def test_sidecar_refuses_insecure_bind_with_no_api_key():
+    assert synthid_score_server._refuses_insecure_bind("0.0.0.0", "", False) is True  # noqa: S104
+
+
+def test_sidecar_allows_insecure_bind_with_explicit_opt_out():
+    assert synthid_score_server._refuses_insecure_bind("0.0.0.0", "", True) is False  # noqa: S104
+
+
+def test_sidecar_allows_non_loopback_bind_with_api_key():
+    assert (
+        synthid_score_server._refuses_insecure_bind("0.0.0.0", "sekret", False) is False  # noqa: S104
+    )
+
+
+def test_sidecar_allows_loopback_bind_with_no_api_key():
+    assert synthid_score_server._refuses_insecure_bind("127.0.0.1", "", False) is False
+
+
+def test_sidecar_main_refuses_insecure_bind_before_starting_server(monkeypatch, capsys):
+    monkeypatch.setattr(synthid_score_server, "API_KEY", "")
+    monkeypatch.delenv("WATERMARKS_SYNTHID_SERVER_ALLOW_INSECURE_BIND", raising=False)
+    monkeypatch.setattr(sys, "argv", ["synthid_score_server.py", "--host", "0.0.0.0"])  # noqa: S104
+    assert synthid_score_server.main() == 2
+    assert "refusing to bind" in capsys.readouterr().err
+
+
+def test_sidecar_main_allows_insecure_bind_via_env_var(monkeypatch):
+    monkeypatch.setattr(synthid_score_server, "API_KEY", "")
+    monkeypatch.setenv("WATERMARKS_SYNTHID_SERVER_ALLOW_INSECURE_BIND", "1")
+    monkeypatch.setattr(sys, "argv", ["synthid_score_server.py", "--host", "0.0.0.0"])  # noqa: S104
+
+    class _FakeServer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(synthid_score_server, "ThreadingHTTPServer", _FakeServer)
+    assert synthid_score_server.main() == 0
+
+
+def test_sidecar_malformed_size_env_falls_back_instead_of_crashing_import():
+    # The sidecar image ships without common.py, so it cannot use env_int.
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import synthid_score_server as s; print(s.MAX_INPUT_BYTES)",
+        ],
+        cwd=SCRIPTS,
+        env={**os.environ, "WATERMARKS_MAX_INPUT_BYTES": "256MB"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str(256 << 20)
+    assert "WATERMARKS_MAX_INPUT_BYTES" in r.stderr

@@ -37,14 +37,43 @@ from score_synthid import score_file
 
 VERSION = os.environ.get("WATERMARKS_SYNTHID_SERVER_VERSION", "dev")
 
+
+def _env_int(name: str, default: int) -> int:
+    """common.env_int's fallback, repeated: the sidecar image does not copy common.py."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        print(f"warning: {name}={raw!r} is not an integer; using {default}", file=sys.stderr)
+        return default
+
+
 # Mirror common.MAX_INPUT_BYTES (env-overridable) with the base64 envelope
-# headroom. Read at import; the sidecar image does not copy common.py, so the
-# default is repeated here.
-MAX_INPUT_BYTES = int(os.environ.get("WATERMARKS_MAX_INPUT_BYTES", str(256 << 20)))
+# headroom. Read at import, so a typo must warn instead of aborting.
+MAX_INPUT_BYTES = _env_int("WATERMARKS_MAX_INPUT_BYTES", 256 << 20)
 MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
 
 API_KEY = os.environ.get("WATERMARKS_SYNTHID_SCORER_API_KEY", "").strip()
 MODEL = os.environ.get("WATERMARKS_SYNTHID_MODEL", "").strip() or None
+
+# Mirrors server.py's LOOPBACK_HOSTS: the sidecar image does not copy common.py.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _env_flag(name: str) -> bool:
+    """common.env_flag's fallback, repeated for the same reason as _env_int."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _refuses_insecure_bind(host: str, api_key: str, allow_insecure_bind: bool) -> bool:
+    """True when *host* is non-loopback, no API key is set, and no opt-out was given.
+
+    A non-loopback bind with no auth exposes image scoring (arbitrary base64
+    payload accepted and written to disk) to anyone who can reach the host.
+    """
+    return host not in _LOOPBACK_HOSTS and not api_key and not allow_insecure_bind
 
 
 def _json_ok(payload: dict[str, Any]) -> bytes:
@@ -60,11 +89,13 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not API_KEY:
             return True
-        return hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {API_KEY}")
+        # Bytes and isdecimal below: same edge cases as server.py's Handler.
+        header = self.headers.get("Authorization", "")
+        return hmac.compare_digest(header.encode(), f"Bearer {API_KEY}".encode())
 
     def _read_json(self) -> dict[str, Any] | None:
         raw = self.headers.get("Content-Length")
-        if raw is None or not raw.isdigit():
+        if raw is None or not raw.isdecimal():
             return None
         length = int(raw)
         if length > MAX_BODY_BYTES:
@@ -103,7 +134,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if body is None:
             raw_len = self.headers.get("Content-Length")
-            oversized = raw_len is not None and raw_len.isdigit() and int(raw_len) > MAX_BODY_BYTES
+            oversized = (
+                raw_len is not None and raw_len.isdecimal() and int(raw_len) > MAX_BODY_BYTES
+            )
             self._respond(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE if oversized else HTTPStatus.BAD_REQUEST,
                 {"ok": False, "error": "invalid request body"},
@@ -152,12 +185,35 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default=os.environ.get("WATERMARKS_SYNTHID_SERVER_HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=_env_int("WATERMARKS_SYNTHID_SERVER_PORT", 8766))
     p.add_argument(
-        "--port", type=int, default=int(os.environ.get("WATERMARKS_SYNTHID_SERVER_PORT", "8766"))
+        "--allow-insecure-bind",
+        action="store_true",
+        default=_env_flag("WATERMARKS_SYNTHID_SERVER_ALLOW_INSECURE_BIND"),
+        help=(
+            "allow binding a non-loopback host with no API key set (default: refuse). "
+            "Only pass this when the real access boundary is elsewhere, e.g. a container "
+            "port published as 127.0.0.1:<port>:<port>."
+        ),
     )
     args = p.parse_args()
 
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
+    if not API_KEY.isascii():
+        print("error: WATERMARKS_SYNTHID_SCORER_API_KEY must be ASCII", file=sys.stderr)
+        return 2
+
+    if _refuses_insecure_bind(args.host, API_KEY, args.allow_insecure_bind):
+        print(
+            f"error: refusing to bind {args.host} with no API key set — this would expose "
+            "image scoring to anyone who can reach this host. Set "
+            "WATERMARKS_SYNTHID_SCORER_API_KEY, or pass --allow-insecure-bind / set "
+            "WATERMARKS_SYNTHID_SERVER_ALLOW_INSECURE_BIND=1 if the real access boundary is "
+            "elsewhere (e.g. a container port published as 127.0.0.1:<port>:<port>).",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.host not in _LOOPBACK_HOSTS:
         print(
             f"warning: binding {args.host} — intended for a trusted network only", file=sys.stderr
         )
