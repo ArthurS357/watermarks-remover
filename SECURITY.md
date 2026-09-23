@@ -47,6 +47,29 @@ Out of scope (unless they cause a concrete security impact in this project):
 - Issues only in third-party tools (`c2patool`, `exiftool`, agents)
 - Social engineering of individual users
 
+## Accepted risk: CtrlRegen research pins
+
+`service/scripts/requirements-ctrlregen.txt` pins `transformers==4.37.2` and
+`diffusers==0.27.2` (plus older `huggingface_hub`/`Pillow` pins their imports
+require), several of which carry published CVEs/advisories. This is a
+deliberate, accepted risk, not an oversight:
+
+- The pins match the upstream research code (`mertizci/noai-watermark`,
+  `yepengliu/CtrlRegen`) this optional backend wraps; newer releases removed
+  symbols that code imports (see the comments in the requirements file).
+- The file is installed only inside the dedicated CtrlRegen venv/image
+  (`ctrlregen` profile), never into the core service image or `requirements-dev.txt`.
+- The backend is invoked locally by an opt-in CLI adapter (`clean_ctrlregen.py`)
+  against a local checkout — it is not exposed to untrusted network input.
+
+**Review trigger:** revisit this pin set when upstream (`noai-watermark` or
+`CtrlRegen`) publishes a version compatible with current `transformers`/
+`diffusers`, or at the next scheduled dependency review (see CI's
+non-blocking `pip-audit (ctrlregen)` job, which reports but does not fail
+the build on these known advisories).
+
+**Last reviewed:** 2026-09-22.
+
 ## Prefer private disclosure
 
 After a fix is released, we may credit reporters who want public credit.

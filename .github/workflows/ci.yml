@@ -74,6 +74,14 @@ jobs:
           python -m pip_audit -r requirements-dev.txt \
             -r service/scripts/requirements-synthid-scorer.txt
 
+      - name: Audit dependencies (pip-audit, ctrlregen — non-blocking)
+        # Known advisories are an accepted risk; see SECURITY.md. Reported so
+        # a NEW, unrelated CVE in this file does not silently go unnoticed.
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+        continue-on-error: true
+        run: |
+          python -m pip_audit -r service/scripts/requirements-ctrlregen.txt
+
   lint:
     runs-on: ubuntu-latest
     steps:
