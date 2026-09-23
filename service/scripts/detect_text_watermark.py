@@ -97,6 +97,7 @@ def _load_algorithm(
     offline: bool = False,
     temperature: float | None = None,
     top_p: float | None = None,
+    revision: str = "main",
 ):
     """Import the checkout and build an ``AutoWatermark`` instance.
 
@@ -125,8 +126,8 @@ def _load_algorithm(
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     load_kwargs = {"local_files_only": True} if offline else {}
 
-    tokenizer = AutoTokenizer.from_pretrained(model, **load_kwargs)
-    lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(model, revision=revision, **load_kwargs)
+    lm = AutoModelForCausalLM.from_pretrained(model, revision=revision, **load_kwargs).to(device)
     transformers_config = TransformersConfig(
         model=lm,
         tokenizer=tokenizer,
@@ -225,6 +226,7 @@ def _cmd_detect(args: argparse.Namespace, upstream: Path, alg: str) -> int:
             offline=args.offline,
             temperature=args.temperature,
             top_p=args.top_p,
+            revision=args.revision,
         )
         det = _detect_payload(wm, text, threshold)
     except _Unavailable as e:
@@ -276,6 +278,7 @@ def _cmd_watermark(args: argparse.Namespace, upstream: Path, alg: str) -> int:
             offline=args.offline,
             temperature=args.temperature,
             top_p=args.top_p,
+            revision=args.revision,
         )
         watermarked, unwatermarked = _generate(
             wm,
@@ -398,6 +401,7 @@ def _cmd_serve(args: argparse.Namespace, upstream: Path, alg: str) -> int:
             offline=args.offline,
             temperature=args.temperature,
             top_p=args.top_p,
+            revision=args.revision,
         )
     except _Unavailable as e:
         eprint(str(e))
@@ -524,6 +528,11 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         "--model",
         default=os.environ.get("MARKLLM_MODEL", DEFAULT_MODEL),
         help=f"HF causal LM for scoring (default: $MARKLLM_MODEL or {DEFAULT_MODEL})",
+    )
+    p.add_argument(
+        "--revision",
+        default=os.environ.get("MARKLLM_MODEL_REVISION", "main"),
+        help="HF Hub revision (commit SHA or tag) to pin --model to (default: main)",
     )
     p.add_argument(
         "--device",
