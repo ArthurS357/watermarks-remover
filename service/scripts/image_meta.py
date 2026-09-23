@@ -31,6 +31,7 @@ from common import (
     safe_arg,
     safe_write_bytes,
     subprocess_preexec_fn,
+    urlopen_no_redirect,
     which,
 )
 
@@ -1453,7 +1454,8 @@ def _synthid_score_http(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        # No redirects: urllib would re-send the Authorization header to the target.
+        with urlopen_no_redirect(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (
         urllib.error.HTTPError,

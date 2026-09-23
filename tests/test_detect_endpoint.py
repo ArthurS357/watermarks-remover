@@ -193,8 +193,8 @@ def test_clean_text_detect_before_after(conn, monkeypatch, tmp_path):
 def test_clean_image_detect_before_after_sidecar(conn, monkeypatch):
     monkeypatch.setenv("WATERMARKS_SYNTHID_SCORER_URL", "http://scorer:8766")
     monkeypatch.setattr(
-        image_meta.urllib.request,
-        "urlopen",
+        image_meta,
+        "urlopen_no_redirect",
         lambda *a, **k: _FakeResp(
             {
                 "available": True,
@@ -228,7 +228,7 @@ def test_run_synthid_score_http_mode(tmp_path, monkeypatch):
         seen["timeout"] = timeout
         return _FakeResp({"available": True, "is_watermarked": False, "confidence": 0.1})
 
-    monkeypatch.setattr(image_meta.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(image_meta, "urlopen_no_redirect", fake_urlopen)
     img = tmp_path / "x.png"
     img.write_bytes(_watermarked_png())
     payload = image_meta.run_synthid_score(img)

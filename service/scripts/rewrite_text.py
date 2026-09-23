@@ -51,7 +51,16 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import cleaned_path, env_flag, env_int, eprint, read_text_input, write_text_output
+from common import (
+    LOOPBACK_HOSTS,
+    cleaned_path,
+    env_flag,
+    env_int,
+    eprint,
+    read_text_input,
+    urlopen_no_redirect,
+    write_text_output,
+)
 from text_detectors import GumbelTextDetector, MarkLLMTextDetector
 from text_unicode import clean_text
 
@@ -64,9 +73,7 @@ DEFAULT_MAX_LOOPS = 1
 # above) could otherwise return an unbounded body and exhaust memory. Sized
 # above MAX_INPUT_BYTES in common.py (the largest input this tool accepts)
 # since a response can legitimately echo back several rewrite candidates.
-MAX_REWRITE_RESPONSE_BYTES = int(
-    os.environ.get("WATERMARKS_REWRITE_MAX_RESPONSE_BYTES", str(64 << 20))
-)
+MAX_REWRITE_RESPONSE_BYTES = env_int("WATERMARKS_REWRITE_MAX_RESPONSE_BYTES", 64 << 20, minimum=1)
 
 PROMPTS = {
     "paraphrase": (
@@ -157,9 +164,6 @@ def _env(name: str, default: str | None = None) -> str | None:
     return v
 
 
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-
-
 def _refuse_non_global_addresses(host: str, port: int) -> None:
     """Resolve *host* and refuse if any address is not publicly routable.
 
@@ -217,7 +221,7 @@ def _check_remote(base_url: str, allow_remote: bool) -> None:
             f"error: rewrite base URL must be http(s), got scheme '{u.scheme}': {base_url}"
         )
     host = u.hostname or ""
-    if host in _LOOPBACK_HOSTS:
+    if host in LOOPBACK_HOSTS:
         return
     if not allow_remote:
         raise SystemExit(
@@ -231,18 +235,6 @@ def _check_remote(base_url: str, allow_remote: bool) -> None:
         f"warning: rewrite base URL host is '{host}' (not localhost); "
         "content will leave this machine"
     )
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse HTTP redirects.
-
-    urllib's default handler re-sends the request headers on 301/302/303,
-    which would forward the Authorization header (API key) to an unvalidated
-    host behind the localhost allowlist. Any 3xx now surfaces as HTTPError.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
 
 
 def _safe_detect(detector: object, text: str) -> dict:
@@ -329,8 +321,7 @@ def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float)
         headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
-    opener = urllib.request.build_opener(_NoRedirect())
-    with opener.open(req, timeout=timeout) as resp:
+    with urlopen_no_redirect(req, timeout=timeout) as resp:
         chunks: list[bytes] = []
         total = 0
         while True:

@@ -48,7 +48,7 @@ from urllib.parse import urlparse
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from common import env_float, eprint  # noqa: E402
+from common import LOOPBACK_HOSTS, env_float, eprint  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
@@ -65,7 +65,6 @@ DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
 # detect_text_watermark.SCHEMES); --config overrides the scheme's config JSON
 # (default: <MarkLLM checkout>/config/<ALG>.json).
 DEFAULT_SCHEME = "synthid"
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # MarkLLM generation/detection can take minutes on CPU (model load per call).
 WATERMARK_TIMEOUT = env_float("WATERMARKS_BENCH_WATERMARK_TIMEOUT", 900.0)

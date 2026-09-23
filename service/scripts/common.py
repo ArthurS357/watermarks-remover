@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import os
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, NoReturn
 
 
 def eprint(*args: object) -> None:
@@ -506,6 +509,36 @@ def which(cmd: str) -> str | None:
     from shutil import which as _which
 
     return _which(cmd)
+
+
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> NoReturn:
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+def urlopen_no_redirect(req: urllib.request.Request, timeout: float) -> http.client.HTTPResponse:
+    """urlopen() that refuses redirects: any 3xx raises HTTPError.
+
+    urllib's default handler re-sends the request headers on 301/302/303, so
+    an Authorization header (API key) would follow the redirect to whatever
+    host it names.
+    """
+    # typeshed types OpenerDirector.open() as Any; for an http(s) Request it is this.
+    resp: http.client.HTTPResponse = urllib.request.build_opener(_NoRedirect()).open(
+        req, timeout=timeout
+    )
+    return resp
 
 
 def safe_arg(path: str) -> str:

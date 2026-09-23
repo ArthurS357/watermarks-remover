@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -602,6 +604,9 @@ def test_rewrite_blocks_redirect_and_never_sends_key():
 
     class Redirector(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
+            # Drain the body first: closing with unread bytes makes Windows
+            # send RST, which the client sees as WinError 10053 instead of 302.
+            self.rfile.read(int(self.headers["Content-Length"]))
             self.send_response(302)
             self.send_header(
                 "Location",
@@ -639,3 +644,23 @@ def test_rewrite_blocks_redirect_and_never_sends_key():
     finally:
         collector.shutdown()
         redirector.shutdown()
+
+
+def test_malformed_response_cap_env_falls_back_instead_of_crashing_import():
+    # Read at import time: a typo used to abort with a bare int() traceback.
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import rewrite_text; print(rewrite_text.MAX_REWRITE_RESPONSE_BYTES)",
+        ],
+        cwd=SCRIPTS,
+        env={**os.environ, "WATERMARKS_REWRITE_MAX_RESPONSE_BYTES": "64MB"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str(64 << 20)
+    assert "WATERMARKS_REWRITE_MAX_RESPONSE_BYTES" in r.stderr
