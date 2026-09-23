@@ -144,6 +144,13 @@ python3 "$SCRIPTS/inspect_image.py" shot.png
 python3 "$SCRIPTS/clean_image.py" shot.png -o shot.cleaned.png
 ```
 
+Flags used above but easy to miss: `--json` (`inspect_*`/`clean_*`/`detect_*`) emits a
+machine-readable report instead of the human summary; `--in-place`
+(`clean_text.py`/`clean_file.py`/`clean_image.py`) rewrites the input file itself, taking a
+`.bak` backup first, instead of requiring `-o`; `--stylometry` (`inspect_text.py`) also runs
+zero-LLM statistical/stylometric AI-cadence scoring (`--threshold` sets its exit-code cutoff,
+default 0.65).
+
 ### Text tools refuse binary input
 
 `inspect_text.py`, `clean_text.py` and `rewrite_text.py` operate on text. Pointed
@@ -180,11 +187,11 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/health` | — | `{"ok": true, "version": ...}` — **no auth** |
-| GET | `/readyz` | — | readiness + diagnosis: `{"status": "ok"\|"degraded", "service", "capabilities", "tools"}` — **no auth** |
+| GET | `/readyz` | — | readiness + diagnosis: `{"ok", "status": "ok"\|"degraded", "service", "capabilities", "tools", "pixel_backends"}` — **no auth** |
 | GET | `/capabilities` | — | optional tools / backends usable (each tool is version-probed, not just found on `PATH`) |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
-| POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
+| POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` (+ `"report"` for av/container) |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
 | POST | `/inspect/batch` | `{"files": [{"file": "<base64>", "name": "notes.md"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "suspicious", "report"}, ...]}` |
 | POST | `/detect/batch` | `{"files": [{"file": "<base64>", "name": "notes.txt"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "detections": [...], "report"}, ...]}` |
@@ -201,7 +208,7 @@ curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
-The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request. Loopback-only bind by default (`--host` to override); intended for a trusted network.
+The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request except `/health` and `/readyz`. Loopback-only bind by default (`--host` to override); intended for a trusted network.
 
 `/health` answers "is the process up?"; **`/readyz`** answers "can it do the job well?" — it lists the supported layers (`unicode_invisible`, `statistical_text`, `metadata`, plus `pixel_removal` when a backend is configured) and the status of each optional tool, with its version when present. `status: "degraded"` means a tool is missing: cleaning still runs, just less thoroughly, so a client should downgrade what it claims rather than refuse. Both endpoints are served **before the auth gate** so a client can diagnose the service before it holds a token; neither returns filesystem paths, environment values, or API-key state.
 
@@ -948,6 +955,12 @@ repos:
 python3 -m venv .venv && .venv/bin/pip install pytest
 .venv/bin/python -m pytest          # or: make test
 make smoke                          # quick CLI smoke on fixtures
+make test-cov-subprocess            # opt-in: also measures CLI entry points invoked via
+                                     # subprocess in tests (clean_text.py, inspect_file.py,
+                                     # score_synthid.py, ...), which `pytest --cov` alone
+                                     # cannot see. Combines parallel coverage data and
+                                     # prints the merged report; not part of CI or plain
+                                     # `make test`.
 ```
 
 ## Changelog

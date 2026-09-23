@@ -134,7 +134,7 @@ curl -s "$WM/readyz"
 
 ### `/capabilities`
 
-Everything `/readyz` reports plus the heavy backends — pixel removal
+The optional-tool status `/readyz` reports (as booleans) plus the heavy backends — pixel removal
 (`ctrlregen`, `diffusion`), scorers (`synthid`, `synthid_http`, `stylometry`),
 text detectors, and research harnesses.
 
@@ -162,7 +162,8 @@ curl -s -X POST "$WM/detect" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < notes.txt | tr -d '\n')\", \"name\": \"notes.txt\"}"
 ```
 
-Returns `{"ok", "kind", "detections": [...]}`. Detection is fail-soft:
+Returns `{"ok", "kind", "detections": [...]}`, plus `"report"` for av/container
+files. Detection is fail-soft:
 unconfigured or errored detectors report `{"available": false, "error": ...}`
 rather than failing the request.
 
@@ -183,6 +184,7 @@ for in-place.
 | --- | --- | --- |
 | `nfkc` | bool | text |
 | `aggressive_homoglyphs` | bool | text |
+| `keep_em_dash` | bool | text |
 | `keep_non_ai_metadata` | bool | images, containers |
 | `strip_all_metadata` | bool | images, containers |
 | `remove_pixel` | `"ctrlregen"` \| `"diffusion"` | images |
