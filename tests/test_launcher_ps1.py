@@ -171,6 +171,8 @@ def test_stop_on_custom_port_does_not_touch_the_default_pid_file():
     try:
         r = run_launcher("-Mode", "stop", "-Port", str(_free_port()))
         assert r.returncode == 0, r.stdout + r.stderr
+        # Proves the stop branch ran: a script that did nothing would pass the rest.
+        assert "Nada para encerrar" in r.stdout
         assert default_pid_file.exists(), "stop on another port deleted the default pid file"
         assert default_pid_file.read_text(encoding="utf-8").strip() == sentinel
     finally:
@@ -179,6 +181,105 @@ def test_stop_on_custom_port_does_not_touch_the_default_pid_file():
         else:
             default_pid_file.write_text(original, encoding="utf-8")
     assert existed or not default_pid_file.exists()
+
+
+def _wait_listening(port: int, timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.2)
+    pytest.fail(f"nothing listened on {port} within {timeout}s")
+
+
+def test_stop_never_kills_a_stale_pid_that_is_not_the_server():
+    """A pid file outlives a crashed server and Windows recycles PIDs:
+    Stop-Process -Force on whatever owns that PID now could cost unsaved work."""
+    port = _free_port()
+    pid_file = ROOT / f"server.{port}.pid"
+    with subprocess.Popen(
+        [str(POWERSHELL), "-NoProfile", "-Command", "Start-Sleep -Seconds 60"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) as bystander:
+        pid_file.write_text(str(bystander.pid), encoding="ascii")
+        try:
+            r = run_launcher("-Mode", "stop", "-Port", str(port))
+            assert bystander.poll() is None, "stop killed a process that is not the server"
+            # Refusal to touch a foreign process is not the idempotent no-op case.
+            assert r.returncode == 1, r.stdout + r.stderr
+            # Says what happened instead of claiming the service is offline.
+            assert "nada encerrado" in r.stdout
+            assert not pid_file.exists(), "the stale pid file should be cleaned up"
+        finally:
+            bystander.kill()
+            pid_file.unlink(missing_ok=True)
+
+
+def test_stop_never_kills_a_foreign_listener_on_the_port():
+    """The port can belong to another program, e.g. Docker's proxy for compose."""
+    port = _free_port()
+    listen = (
+        f"$l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, {port}); "
+        "$l.Start(); Start-Sleep -Seconds 60"
+    )
+    with subprocess.Popen(
+        [str(POWERSHELL), "-NoProfile", "-Command", listen],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) as bystander:
+        try:
+            _wait_listening(port)
+            r = run_launcher("-Mode", "stop", "-Port", str(port))
+            assert bystander.poll() is None, "stop killed a foreign process on the port"
+            assert r.returncode == 1, r.stdout + r.stderr
+            assert "nada encerrado" in r.stdout
+            assert "offline" not in r.stdout, "the port is taken; the service is not offline"
+        finally:
+            bystander.kill()
+
+
+def test_stop_never_kills_another_projects_server_py():
+    """Only this repo's service\\scripts\\server.py counts, not any scripts\\server.py."""
+    port = _free_port()
+    pid_file = ROOT / f"server.{port}.pid"
+    # The launcher only reads the command line, so the lookalike path need not exist.
+    decoy = r"C:\other-project\scripts\server.py"
+    with subprocess.Popen(
+        [str(POWERSHELL), "-NoProfile", "-Command", f"Start-Sleep -Seconds 60 # {decoy}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) as bystander:
+        pid_file.write_text(str(bystander.pid), encoding="ascii")
+        try:
+            r = run_launcher("-Mode", "stop", "-Port", str(port))
+            assert bystander.poll() is None, "stop killed another project's server.py"
+            assert r.returncode == 1, r.stdout + r.stderr
+        finally:
+            bystander.kill()
+            pid_file.unlink(missing_ok=True)
+
+
+def test_stop_still_kills_the_real_server_on_the_port():
+    """The guard must not turn stop into a no-op for the process it exists for."""
+    port = _free_port()
+    with subprocess.Popen(
+        [sys.executable, str(ROOT / "service" / "scripts" / "server.py"), "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) as srv:
+        try:
+            _wait_listening(port)
+            r = run_launcher("-Mode", "stop", "-Port", str(port))
+            assert r.returncode == 0, r.stdout + r.stderr
+            assert "Servidor encerrado" in r.stdout
+            # A venv python.exe may be a stub whose child is the listener; the
+            # stub exits once that child is gone.
+            srv.wait(timeout=30)
+        finally:
+            srv.kill()
+            (ROOT / f"server.{port}.pid").unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------

@@ -8,15 +8,25 @@
 !/benchmarks/**
 !/docs/
 !/docs/**
+!/integrations/
+!/integrations/**
 !/service/
 !/service/**
+# git cannot re-include a file whose parent dir is excluded: re-open /skills
+# itself, then deny its children again before allowing each skill.
+!/skills/
+/skills/*
+!/skills/clean-user-facing-text/
+!/skills/clean-user-facing-text/**
 !/skills/remove-ai-marks/
 !/skills/remove-ai-marks/**
 !/tests/
 !/tests/**
 !/.coderabbit.yaml
+!/.coveragerc
 !/.dockerignore
 !/.env.example
+!/.gitattributes
 !/.gitignore
 !/.pre-commit-hooks.yaml
 !/AI_INTEGRATION.md
@@ -24,6 +34,8 @@
 !/compose-check.sh
 !/compose.yaml
 !/CONTRIBUTING.md
+!/install-skill.sh
+!/install_skill.py
 !/LICENSE
 !/Makefile
 !/pytest.ini
@@ -31,6 +43,8 @@
 !/requirements-dev.txt
 !/ruff.toml
 !/SECURITY.md
+!/start-watermarks-server.ps1
+!/watermarks-server.cmd
 
 # Exceptions even inside allowed trees
 .env
