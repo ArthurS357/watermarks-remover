@@ -14,9 +14,10 @@ test:
 
 # Opt-in: also measures CLI entry points exercised via subprocess (clean_text.py,
 # inspect_file.py, score_synthid.py, ...), which plain `make test` cannot see.
-# See .coveragerc and service/scripts/sitecustomize.py.
+# See .coveragerc and service/scripts/sitecustomize.py. Both paths are absolute:
+# some tests spawn with cwd=service/scripts, where relative ones don't resolve.
 test-cov-subprocess:
-	COVERAGE_PROCESS_START=.coveragerc $(PYTHON) -m coverage run -m pytest -q
+	COVERAGE_PROCESS_START=$(CURDIR)/.coveragerc COVERAGE_FILE=$(CURDIR)/.coverage $(PYTHON) -m coverage run -m pytest -q
 	$(PYTHON) -m coverage combine
 	$(PYTHON) -m coverage report -m
 
