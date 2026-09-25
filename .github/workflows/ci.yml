@@ -40,6 +40,15 @@ jobs:
         # gate on the corrected number.
         run: python -m pytest -q --cov=service/scripts --cov-report=term-missing
 
+      - name: Subprocess coverage (make test-cov-subprocess)
+        # The only place the target runs through a real `make`. No .venv here,
+        # so PYTHON falls back to python3 on purpose. The second line guards
+        # 281b4b2: stray .coverage* under service/ or tests/ means lost data.
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+        run: |
+          make test-cov-subprocess
+          test -z "$(find service tests -name '.coverage*')"
+
       - name: Validate OpenAPI spec
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
         run: |
