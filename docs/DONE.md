@@ -2,6 +2,100 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Rodada R7 — 2026-09-25 — Fechamento dos resíduos da R6
+
+| Medida | Início | Fim |
+|---|---|---|
+| Testes coletados / passed / skipped | 744 / 737 / 7 | 750 / 743 / 7 (+6 testes, 0 regressões) |
+| `ruff check .` e `ruff format --check .` | limpos | limpos |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades | 0 vulnerabilidades |
+| Bandit, `-r service/scripts/` completo | Low 32 / Medium 1 / High 0 | igual |
+| `mypy --strict detect_text_watermark.py` | 8 erros (preexistentes) | os mesmos 8 (delta 0) |
+
+O plano foi escrito antes de qualquer edição, em a713bbd (`docs/TODO.md`).
+
+| ID | Item | Commit | Nota |
+|---|---|---|---|
+| R7-01 | REC-05 ambíguo: pin real da revisão HF | 6a97ae9 | Opção **A**. Detalhe e evidência do bandit abaixo |
+| R7-02 | Evidência do smoke test da R6 no DONE | e549636 | Smoke repetido em 6a97ae9. Seção `### Verificação final — R6` |
+| R7-03 | Justificativa do `S101` no `ruff.toml` | a1e69a8 | O comentário antigo ("idiomatic in this test suite") estava errado, porque o ignore é global. Agora aponta para REC-04. Não reaberto |
+| R7-04 | `make test-cov-subprocess` exercitado via `make` | 281b4b2 (bug da receita) · 🔴 `make` em si **escalado** | Ver abaixo e `docs/TODO.md` |
+| R7-05 | Âncora da decisão de cobertura de `clean_ctrlregen.py` | 01e9bbb | Comentário entre o shebang e a docstring (`__doc__` intacto). 73% re-medido na R7 |
+| R7-06 | Nota: a R5 fechou `_LOOPBACK_HOSTS` pela metade | 86d5559 | Linha adicionada na R6-03. Não reaberto |
+
+### R7-01 — pin da revisão do modelo MarkLLM
+
+- **Pin:** `DEFAULT_MODEL_REVISION = "3f5c25d0bc631cb57ac65913f76e22c2dfb61d62"`, que é o
+  `main` atual do `facebook/opt-1.3b` (API do HF, `lastModified` 2023-09-15). Como o main de
+  hoje é o próprio pin, um cache existente continua servindo com `--offline`.
+- **Resolução** (`_load_algorithm`, por onde passam os 3 caminhos: detect, watermark e
+  serve): `--revision` ou `MARKLLM_MODEL_REVISION` (vazio conta como não definido). Sem
+  nenhum dos dois, usa o pin se `--model` for o `DEFAULT_MODEL` (comparação sem diferenciar
+  maiúsculas, como os ids do Hub) e `main` para qualquer outro modelo. Os chamadores
+  `rewrite_text.py` e `bench_synthid_text.py` passam a própria cópia do nome do modelo. Um
+  teste de guarda falha se essa cópia divergir, porque a divergência cairia no `main` sem
+  aviso.
+- **Como bumpar:** fazer `GET https://huggingface.co/api/models/facebook/opt-1.3b/revision/main`,
+  pegar o campo `sha` e atualizar `DEFAULT_MODEL_REVISION` e `PINNED` em
+  `tests/test_markllm_detect.py`. O teste falha se só um dos dois mudar.
+- **Bandit B615, antes e depois:**
+
+  | Árvore | B615 |
+  |---|---|
+  | `2650c4d^` (antes do REC-05) | **2** (`detect_text_watermark.py` L128, L129) |
+  | `8c6c851` (fim da R6, default `"main"`) | 0 |
+  | `6a97ae9` / HEAD (pin real) | 0 |
+
+  **O número não muda com o pin, e não é supressão.** O plugin
+  (`bandit/plugins/huggingface_unsafe_download.py`, bandit 1.9.4) sai sem achado sempre que
+  o kwarg `revision=` não é `ast.Constant`. Desde o 2650c4d a chamada usa uma variável, então
+  o scanner nunca viu o valor, e o "0 achados após" da R6 era falso negativo. Demonstração
+  num arquivo scratch: `revision="main"` literal **dispara**, e `revision=rev` com o mesmo
+  valor fica em silêncio. A prova do pin é o valor mais o teste
+  `test_cli_revision_resolution`: 5 casos, com tokenizer e modelo ambos na revisão
+  resolvida. Esse teste ficou RED no código antigo, só no caso do pin.
+- **Revisão:** `python-reviewer` deu PASS (0 CRITICAL/HIGH). Dos achados, a comparação
+  case-insensitive, o assert duplo tokenizer+modelo e o caso de env vazia foram aplicados, e
+  a recomendação de import do nome do modelo virou o teste de guarda de drift. O
+  `code-reviewer` (inline) deu Approve.
+- **Fora de escopo, observado:** `markdiffusion_harness.py` chama o `from_pretrained` do
+  diffusers sem `revision`, e o B615 não cobre diffusers. É candidato a R8 e foi aberto como
+  tarefa separada.
+
+### R7-04 — `make test-cov-subprocess`
+
+- **Ambiente:** não há `make`/`gmake`/`mingw32-make`. O WSL não está instalado (só o stub) e
+  não há docker/podman/act. A CI não chama o target, e os commits não foram pushados. Por
+  isso o `make` em si **não foi exercitado**. Fica escalado (🔴 em `docs/TODO.md`).
+- **Bug encontrado mesmo assim** (receita rodada via bash): `COVERAGE_PROCESS_START=.coveragerc`
+  é relativo. `test_rewrite_text.py:657` e `test_synthid_score.py:379` sobem Python com
+  `cwd=service/scripts`, onde o coverage 7.15.4 inicia **em silêncio** com os defaults (sem
+  `parallel`). O resultado é um `service/scripts/.coverage` não rastreado, com dado que nunca
+  é combinado. Corrigido em 281b4b2 com `$(CURDIR)` absoluto para o rcfile **e** para
+  `COVERAGE_FILE`. Só o rcfile absoluto não basta, porque o arquivo sufixado continuaria
+  caindo no cwd do subprocesso.
+- **Evidência (bash, não make):** depois do fix, 0 arquivos `.coverage*` em `service/` e
+  `tests/`, e o `combine` roda na raiz. `clean_ctrlregen.py` 73%, `rewrite_text.py` 87%,
+  `synthid_score_server.py` 67%, TOTAL 82%. Esses números são iguais aos de antes do fix,
+  porque o dado perdido era só de linhas de import, já cobertas in-process.
+
+### Skills invocadas (para cruzar com o transcript)
+
+| Skill | Fase | Propósito |
+|---|---|---|
+| `ponytail:ponytail-review` | 0 | Critério de over-engineering aplicado ao diff da rodada: "Lean already. Ship." |
+| `ponytail:ponytail-debt` | 0 | Ledger `ponytail:`: 0 marcadores |
+| `python-pro` | 0 | Padrões do código do R7-01 (`str \| None`, sem default mutável) |
+| `py-test-quality` | 0 | RED/GREEN do teste de revisão; medição via subprocess-coverage (R7-04/R7-05) |
+| `py-security` | 0 | Análise do B615, bandit antes/depois, pip-audit |
+| `py-code-health` | 0 | Nenhum código morto introduzido; comentário `S101` corrigido |
+| `py-typing` | 0 | Contrato `revision: str \| None`; delta do `mypy --strict` = 0 |
+| `caveman` | 0 | Estilo de saída |
+| `python-test` | 0 | Baseline via agente `python-test-runner` (744/737/7) |
+| `python-review` (condicional) | 2 | Agente `python-reviewer` no diff do R7-01: PASS. O gatilho literal ("R6-02 toca o scorer") não se aplica, porque `clean_ctrlregen.py` não importa `image_meta`/`synthid_score`. Invocado por ser código de produção |
+| `code-reviewer` (condicional) | 2 | Revisão inline do R7-01: Approve |
+| `python-type` (condicional) | — | **Não invocado.** O `mypy --strict` no arquivo tocado teve delta 0 (8 erros preexistentes, nenhum novo) |
+
 ## Rodada R6 — 2026-09-22 — Fechamento de gaps
 
 Baseline no início da rodada: 738 coletados / 731 passed / 7 skipped. Baseline no fim:
