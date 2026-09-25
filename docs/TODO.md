@@ -2,6 +2,23 @@
 
 ## Rodada R9 — 2026-09-25 — Fechamento e verificação de uso
 
+Concluída. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-09-25). **Sistema pronto
+para uso: sim.** Nenhuma pendência bloqueia o uso.
+
+### 🟡 Aberto, não bloqueia uso
+
+**R9-01: primeiro run do step `Subprocess coverage (make test-cov-subprocess)` na CI.**
+
+- **Motivo de ainda estar aberto:** o step existe (1ec955a), mas a CI só roda depois de
+  `git push`, que está fora da autoridade das rodadas.
+- **Por que não bloqueia:** é uma ferramenta de medição de cobertura de dev. A receita já foi
+  verificada via bash no mesmo HEAD (83%, sem vazamento de `.coverage*`), e nenhum caminho de
+  uso passa por ela.
+- **Fecha quando:** o job `test (ubuntu-latest, 3.14)` ficar verde no primeiro push. Aí basta
+  anotar o link do run no DONE e trocar para ✅.
+
+### Plano (registrado antes das edições, c85d942)
+
 Baseline (FASE 0, HEAD `805270f`): 755 coletados / 748 passed / 7 skipped, `ruff check .` e
 `ruff format --check .` limpos, `pip-audit` (`.venv`) 0 vulnerabilidades. Bate com o fim da R8.
 
@@ -24,12 +41,13 @@ FASE 3 (suíte, ruff, pip-audit, smoke do serviço) → FASE 4 (DONE/TODO) → c
 
 ## Rodada R7 — 2026-09-25 — Fechamento dos resíduos da R6
 
-Concluída, exceto pelo item abaixo. O plano original está em a713bbd, e o detalhe e os
-commits estão em [`docs/DONE.md`](DONE.md#rodada-r7--2026-09-25--fechamento-dos-resíduos-da-r6).
+Concluída. O plano original está em a713bbd, e o detalhe e os commits estão em
+[`docs/DONE.md`](DONE.md#rodada-r7--2026-09-25--fechamento-dos-resíduos-da-r6).
 
-### 🔴 Escalado
+### ~~🔴 Escalado~~ → absorvido pela R9-01 (opção "b": step de CI, 1ec955a)
 
-**R7-04 — rodar `make test-cov-subprocess` via `make` de verdade.**
+**R7-04 — rodar `make test-cov-subprocess` via `make` de verdade.** O texto abaixo foi
+mantido como histórico. O estado atual é o da R9-01, acima.
 
 - **Motivo:** esta máquina não tem nenhum `make`, o WSL não está instalado e não há
   docker/podman/act. A CI não chama o target, e sem `git push` não dá para usar a CI.

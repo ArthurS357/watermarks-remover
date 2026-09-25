@@ -2,6 +2,158 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Estado do sistema — 2026-09-25
+
+| ID | Item | Estado | Commit |
+|---|---|---|---|
+| R9-01 | R7-04: `make test-cov-subprocess` via `make` de verdade | 🟡 mitigado: step na CI, primeiro run pendente do push | 1ec955a |
+| R9-02 | Conflito de worktrees MarkDiffusion | ✅ fechado: não havia conflito | — (nada a mudar) |
+| R9-03 | `markdiffusion_harness.py` sem pin | ✅ fechado: já resolvido na R8 | 7d053bd |
+
+| Medida | Valor final (HEAD `1ec955a`) |
+|---|---|
+| Testes | 755 coletados / 748 passed / 7 skipped, 0 falhas, exit 0 |
+| Cobertura (receita do `test-cov-subprocess`, via bash) | TOTAL **83%** (R7: 82%) |
+| `ruff check .` e `ruff format --check .` | limpos (102 arquivos) |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades |
+| Bandit, `-r service/scripts/` (1.9.4) | Low 32 / Medium 1 / High 0, igual à R7. B615: 0 |
+| Smoke do serviço | 8/8 verdes (tabela na R9) |
+
+**Sistema pronto para uso: sim.** Suíte, lint, auditoria e smoke do serviço estão verdes. O
+único item aberto (R9-01) é da ferramenta de cobertura de dev e não afeta nenhum caminho de uso.
+
+**Riscos residuais que não bloqueiam uso (cards futuros):**
+- **R9-01:** o `make` real só roda no primeiro push. Vira ✅ se o step ficar verde. Se falhar,
+  o erro mostra qual das 3 coisas quebrou: o parse da receita (TAB), a expansão de `$(CURDIR)`
+  ou o fallback `PYTHON ?= python3`.
+- O pacote upstream `markdiffusion` pode baixar outros modelos do Hub sem revisão fixa (por
+  exemplo, o captioner do SEAL). Isso fica fora do nosso código e é o limite já registrado na
+  R8.
+- Os 7 skips dependem do ambiente: 4 precisam de privilégio de symlink (WinError 1314), 2
+  exigem POSIX e 1 precisa do `scipy`, que não está na `.venv`. Dois deles são testes de
+  hardening (`safe_write`/`backup_path` com symlink), que **nunca rodam nesta máquina**. Só a
+  CI em Linux/macOS os exercita.
+- `degraded` no `--status` porque o `c2patool` não está instalado. É o esperado (contrato da
+  R6).
+- Os itens mantidos nas R5/R6/R7 (REC-01, REC-02, REC-04, REC-07 e R6-04..R6-10) continuam
+  mantidos e não foram reabertos.
+
+## Rodada R9 — 2026-09-25 — Fechamento e verificação de uso
+
+| Medida | Início (`805270f`) | Fim (`1ec955a`) |
+|---|---|---|
+| Testes coletados / passed / skipped | 755 / 748 / 7 | 755 / 748 / 7 (0 testes novos, 0 regressões) |
+| `ruff check .` e `ruff format --check .` | limpos | limpos |
+| `pip-audit` (`.venv`) | 0 | 0 |
+
+O plano foi escrito antes de qualquer edição, em c85d942 (`docs/TODO.md`).
+
+| ID | Item | Commit | Nota |
+|---|---|---|---|
+| R9-01 | R7-04: `make` de verdade no `test-cov-subprocess` | 1ec955a | Opção 1 (step na CI). Detalhe abaixo |
+| R9-02 | Worktree do cartão MarkDiffusion | — | Não havia worktree nem branch. Nenhuma ação |
+| R9-03 | Pin do `markdiffusion_harness.py` | 7d053bd (R8) | Premissa desatualizada: a R8 já tinha fechado o item |
+
+### R9-01 — `make test-cov-subprocess` na CI
+
+- **Por que a opção 1:** ninguém na máquina roda `make`. `make`, `gmake`, `mingw32-make`,
+  docker, podman e act não estão no PATH. Uma busca recursiva (profundidade 7) por
+  `make.exe`/`gmake.exe`/`mingw32-make.exe` também não achou nada. Ela cobriu `Program Files`
+  (x64 e x86), `ProgramData`, `%LOCALAPPDATA%` e `%APPDATA%`, e também `C:\msys64`,
+  `C:\cygwin64`, `C:\Strawberry` e scoop, onde esses existissem. O `wsl --status` responde que o WSL "não está
+  instalado". Isso descarta as opções 2 (a CI já existe) e 3 (container).
+- **Step adicionado** em `.github/workflows/ci.yml`, job `test`, depois do `Test`:
+
+  ```yaml
+  - name: Subprocess coverage (make test-cov-subprocess)
+    if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+    run: |
+      make test-cov-subprocess
+      test -z "$(find service tests -name '.coverage*')"
+  ```
+
+  O step roda sem override de `PYTHON` de propósito. O runner não tem `.venv`, então o
+  fallback `python3` do Makefile também é exercitado. A segunda linha é a guarda de regressão
+  do 281b4b2: ela falha se algum `.coverage*` cair em `service/` ou `tests/`. O YAML foi
+  validado com `yaml.safe_load`, e o step ficou na posição 4 do job `test`.
+- **Evidência de execução:** **nenhuma via `make` ainda.** Sem `git push` o run não acontece.
+  A receita foi rodada de novo via bash no HEAD `1ec955a`, com `$(CURDIR)` trocado por
+  `pwd -W`:
+
+  | Passo | Saída | Exit |
+  |---|---|---|
+  | `coverage run -m pytest -q` | 755 resultados de progresso: 748 `.`, 7 `s`, 0 `F`, 0 `E` | 0 |
+  | `coverage combine` | `Combined 71 files, skipped 35` | 0 |
+  | `coverage report -m` | `TOTAL 7183 1252 83%`. `clean_ctrlregen.py` 73%, `rewrite_text.py` 87%, `synthid_score_server.py` 67%, `markdiffusion_harness.py` 79% | 0 |
+  | `find service tests -name '.coverage*'` | vazio | — |
+
+- **Nota de processo:** a primeira execução da suíte na FASE 3 foi descartada como evidência.
+  O `-q` que passei somou com o `addopts = -q` e virou `-qq`, que esconde o resumo, e o
+  `| tail` mascarou o exit code do pytest. Os números acima são da segunda execução, com o
+  log completo.
+
+### R9-02 — worktrees da sessão do cartão
+
+| | Estado |
+|---|---|
+| Antes | `git worktree list`: 1 (só `E:/Projetos/Scripts/watermarks-remover`, `main`). `.git/worktrees/` não existe e `git worktree prune --dry-run` não mostra nada. Branch local: só `main`. Sem stash. `E:\Projetos\claude-worktrees\` só tem `LoveLedger/` |
+| Origem do "conflito" | O app não tem nenhuma sessão com worktree ou branch deste repo. A sessão da R7 foi arquivada às 06:51:42Z, 18 s depois do `805270f` (03:51:24 -03 = 06:51:24Z). O R8 foi commitado direto no `main` pela própria sessão da R7, e o cartão aberto na R7 nunca virou worktree |
+| Ação | Nenhuma. Não havia worktree nem branch para remover, e por isso não houve o commit `chore(git)` do plano |
+| Depois | Igual ao antes |
+
+- **Fora de escopo, observado:** existe o branch remoto `origin/feat/markdiffusion-harness`
+  (`67ab20a`). É o branch original da feature e não é worktree. O `git cherry` marca o commit
+  como `-`, ou seja, o conteúdo já está no `main` via `6144019`. Apagar esse branch exige push
+  e ficou fora do escopo desta rodada.
+- Se o cartão ainda aparecer na sessão arquivada da R7, **descarte**: o trabalho está em
+  7d053bd.
+
+### R9-03 — pin do `markdiffusion_harness.py`
+
+- A referência veio da R7 ("Fora de escopo, observado", seção R7-01), que já dizia
+  "Resolvido na R8 (7d053bd)". O arquivo existe. `DEFAULT_MODEL_REVISION = "f71d786…"`,
+  `--revision` e `MARKDIFFUSION_MODEL_REVISION` estão presentes, e as 2 chamadas
+  `from_pretrained` do diffusers (L142, L146) passam `revision=`. Nenhuma outra chamada
+  `from_pretrained`/`snapshot_download`/`hf_hub_download` em `service/scripts/` fica sem
+  `revision`.
+- **Reexecução:** `pytest tests/test_markdiffusion_harness.py -k revision` deu 5 passed. Não
+  há TDD novo, porque não há código novo.
+
+### Verificação final — R9 (smoke do serviço)
+
+A verificação rodou em 2026-09-25, por volta das 10:50 -03:00, no HEAD `1ec955a`, usando
+`%USERPROFILE%\bin\watermarks-server.cmd`. O SHA-256 dessa cópia é igual ao da do repo. A
+porta 8765 estava livre antes.
+
+| Comando | Saída (1 linha) | Exit / HTTP |
+|---|---|---|
+| `watermarks-server --status` | `offline -- http://127.0.0.1:8765 nao respondeu.` | 1 |
+| `watermarks-server --wait` | `Servico no ar em http://127.0.0.1:8765 (versao dev).` | 0 |
+| `curl /health` | `{"ok": true, "version": "dev"}` | 200 |
+| `curl /readyz` | `status: degraded`, chaves `capabilities`, `ok`, `pixel_backends`, `service`, `status`, `tools`. `pixel_backends.verified: false` | 200 |
+| `curl /capabilities` | 5 grupos (`tools`, `pixel_backends`, `scorers`, `text_detectors`, `harnesses`), 12 folhas, todas `bool` | 200 |
+| `curl /openapi.json` | OpenAPI 3.0.3, `openapi_spec_validator.validate` OK, 10 paths | 200 |
+| `watermarks-server --stop` | `Servidor encerrado (PID 23068).` | 0 |
+| `watermarks-server --status` | `offline -- http://127.0.0.1:8765 nao respondeu.` A porta 8765 ficou livre | 1 |
+
+Os contratos pinados continuam valendo: `/capabilities` só tem bool e
+`pixel_backends.verified` é `false`.
+
+### Skills invocadas (para cruzar com o transcript)
+
+| Skill | Fase | Propósito |
+|---|---|---|
+| `ponytail:ponytail-review` | 0 | Critério aplicado ao diff da rodada (9 linhas de YAML): "Lean already. Ship." |
+| `ponytail:ponytail-debt` | 0 | Ledger `ponytail:`: 0 marcadores |
+| `python-pro` | 0 | Carregada. Não houve código Python novo na rodada (R9-03 já estava resolvido) |
+| `py-test-quality` | 0, 3 | Medição de cobertura pela receita do target (83%) e contagem pelo progresso completo |
+| `py-security` | 0, 3 | `pip-audit` 0. Bandit Low 32 / Medium 1 / High 0. Varredura de `from_pretrained` sem `revision` |
+| `py-code-health` | 0 | Nenhum código adicionado ou removido. Nada a varrer |
+| `caveman` | 0 | Estilo de saída |
+| `python-test` | 0 | Baseline via agente `python-test-runner`: 755/748/7 |
+| `python-review` (condicional) | — | **Não invocado.** O gatilho previsto era tocar o Makefile, e o Makefile não foi tocado. O diff é só YAML de CI, sem secret, sem action nova e com `permissions` inalterado |
+| `python-type` (condicional) | — | **Não invocado.** Nenhum `.py` foi alterado |
+
 ## Rodada R8 — 2026-09-25 — Pin de revisão HF no MarkDiffusion
 
 | Medida | Início | Fim |
