@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Coverage is measured via subprocess (make test-cov-subprocess). See docs/DONE.md, R6-02.
 """Optional CtrlRegen pixel-watermark remover backed by an external noai-watermark checkout.
 
 This script does NOT vendor upstream code. It imports ``CtrlRegenEngine`` from
