@@ -38,3 +38,20 @@ não executado; registrado como limitação do ambiente, não pulado por escolha
 | REC-07 | `urlopen_no_redirect` não valida scheme | — (mantido) | chamadores já validam |
 | — | Reconciliação de 19 arquivos + trabalho da R5 não commitado | 251bf26, c899a59, 7824c98 | bearer-token-via-redirect, non-ASCII API key, Content-Length não-decimal, spec OpenAPI, cleanup de código |
 | — | `docs/TODO.md` + `docs/DONE.md` criados | (este commit) | rastreamento de escopo passa a viver em arquivos, não no prompt |
+
+### Verificação final — R6
+
+O smoke test original da R6 ficou só no chat, sem registro. Foi **repetido na R7 (R7-02)**
+em 2026-09-25 03:30 -03:00, no commit `6a97ae9` (R6 + o pin do R7-01), usando a cópia
+`%USERPROFILE%\bin\watermarks-server.cmd`, que é byte a byte igual à do repo:
+
+| Comando | Saída | Exit |
+|---|---|---|
+| `watermarks-server --status` | `offline -- http://127.0.0.1:8765 nao respondeu.` | 1 |
+| `watermarks-server --wait` | `Servico no ar em http://127.0.0.1:8765 (versao dev).` | 0 |
+| `watermarks-server --status` | `degraded -- online em http://127.0.0.1:8765 (versao dev), sem: c2patool.` | 0 |
+| `watermarks-server --stop` | `Servidor encerrado (PID 21900).` | 0 |
+| `watermarks-server --status` | `offline -- http://127.0.0.1:8765 nao respondeu.` | 1 |
+
+O resultado `degraded` é o esperado nesta máquina, porque o `c2patool` não está instalado. A
+limpeza funciona e PDF/imagem ficam best-effort (contrato da R6: `degraded` sai 0).
