@@ -60,6 +60,11 @@ SCHEMES = {
 IMAGE_SCHEMES = {"TR", "RI", "ROBIN", "WIND", "SFW", "GS", "GM", "PRC", "SEAL"}
 
 DEFAULT_MODEL = "huanzi05/stable-diffusion-2-1-base"
+# Immutable HF Hub commit for DEFAULT_MODEL (a mirror on a personal account), so
+# a push to its `main` is never picked up silently. bandit B615 does not scan
+# diffusers calls. To bump: take `sha` from
+# https://huggingface.co/api/models/huanzi05/stable-diffusion-2-1-base/revision/main
+DEFAULT_MODEL_REVISION = "f71d7867a2745c420aa93441638b119c85995963"
 
 # Algorithm configs are a few hundred bytes (TR.json/GS.json). Cap well above
 # that so a crafted or accidental huge file is refused before either this script
@@ -122,17 +127,20 @@ def _import_markdiffusion(upstream: Path | None) -> Any:
     return markdiffusion
 
 
-def _load_diffusion(model: str, device: str, offline: bool, size: int):
+def _load_diffusion(model: str, device: str, offline: bool, size: int, revision: str | None = None):
     """Load the Stable Diffusion pipeline and scheduler used by the harness."""
     if offline:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     load_kwargs = {"local_files_only": True} if offline else {}
+    if revision is None:
+        # The pin is only known for DEFAULT_MODEL; another --model stays on main.
+        revision = DEFAULT_MODEL_REVISION if model.lower() == DEFAULT_MODEL else "main"
 
     import torch
     from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
 
     scheduler = DPMSolverMultistepScheduler.from_pretrained(
-        model, subfolder="scheduler", **load_kwargs
+        model, subfolder="scheduler", revision=revision, **load_kwargs
     )
     dtype = torch.float16 if device == "cuda" else torch.float32
     pipe = StableDiffusionPipeline.from_pretrained(
@@ -140,6 +148,7 @@ def _load_diffusion(model: str, device: str, offline: bool, size: int):
         scheduler=scheduler,
         torch_dtype=dtype,
         safety_checker=None,
+        revision=revision,
         **load_kwargs,
     ).to(device)
     return pipe, scheduler
@@ -237,7 +246,9 @@ def _cmd_watermark(args: argparse.Namespace, upstream: Path | None, scheme: str)
         from markdiffusion.utils import DiffusionConfig
         from markdiffusion.watermark import AutoWatermark
 
-        pipe, scheduler = _load_diffusion(args.model, device, args.offline, args.size)
+        pipe, scheduler = _load_diffusion(
+            args.model, device, args.offline, args.size, args.revision
+        )
         diffusion_config = DiffusionConfig(
             scheduler=scheduler,
             pipe=pipe,
@@ -313,7 +324,9 @@ def _cmd_detect(args: argparse.Namespace, upstream: Path | None, scheme: str) ->
         from markdiffusion.watermark import AutoWatermark
         from PIL import Image
 
-        pipe, scheduler = _load_diffusion(args.model, device, args.offline, args.size)
+        pipe, scheduler = _load_diffusion(
+            args.model, device, args.offline, args.size, args.revision
+        )
         diffusion_config = DiffusionConfig(
             scheduler=scheduler,
             pipe=pipe,
@@ -375,7 +388,9 @@ def _cmd_purify(args: argparse.Namespace, upstream: Path | None) -> int:
         from markdiffusion.utils import DiffusionConfig
         from PIL import Image
 
-        pipe, scheduler = _load_diffusion(args.model, device, args.offline, args.size)
+        pipe, scheduler = _load_diffusion(
+            args.model, device, args.offline, args.size, args.revision
+        )
         diffusion_config = DiffusionConfig(
             scheduler=scheduler,
             pipe=pipe,
@@ -428,6 +443,13 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         "--model",
         default=os.environ.get("MARKDIFFUSION_MODEL", DEFAULT_MODEL),
         help=f"HF Stable Diffusion model (default: $MARKDIFFUSION_MODEL or {DEFAULT_MODEL})",
+    )
+    p.add_argument(
+        "--revision",
+        default=os.environ.get("MARKDIFFUSION_MODEL_REVISION") or None,
+        help="HF Hub revision (commit SHA or tag) to pin --model to (default: "
+        f"$MARKDIFFUSION_MODEL_REVISION, else {DEFAULT_MODEL_REVISION[:7]} for "
+        f"{DEFAULT_MODEL}, else main)",
     )
     p.add_argument(
         "--device",

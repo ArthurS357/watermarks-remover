@@ -168,6 +168,80 @@ def test_cli_bad_scheme(tmp_path: Path):
     assert "unknown scheme" in (r.stderr or "")
 
 
+FAKE_TORCH = "float16 = 'float16'\nfloat32 = 'float32'\n"
+
+FAKE_DIFFUSERS = """\
+import sys
+
+class _Pipe:
+    def to(self, device):
+        return self
+
+class DPMSolverMultistepScheduler:
+    @staticmethod
+    def from_pretrained(name, **kwargs):
+        print("MARKDIFFUSION_REVISION=" + repr(kwargs.get("revision")), file=sys.stderr)
+        return object()
+
+class StableDiffusionPipeline:
+    @staticmethod
+    def from_pretrained(name, **kwargs):
+        print("MARKDIFFUSION_REVISION=" + repr(kwargs.get("revision")), file=sys.stderr)
+        return _Pipe()
+"""
+
+PINNED = "f71d7867a2745c420aa93441638b119c85995963"
+
+
+@pytest.mark.parametrize(
+    ("extra", "env_revision", "expected"),
+    [
+        ((), None, PINNED),  # default model -> pinned SHA
+        ((), "", PINNED),  # empty MARKDIFFUSION_MODEL_REVISION counts as unset
+        (("--model", "HuanZi05/Stable-Diffusion-2-1-Base"), None, PINNED),  # Hub ids ignore case
+        (("--model", "org/other-model"), None, "main"),  # pin belongs to the default model only
+        (("--revision", "abc1234"), None, "abc1234"),  # explicit override wins
+    ],
+)
+def test_cli_revision_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: tuple[str, ...],
+    env_revision: str | None,
+    expected: str,
+):
+    monkeypatch.delenv("MARKDIFFUSION_MODEL", raising=False)
+    if env_revision is None:
+        monkeypatch.delenv("MARKDIFFUSION_MODEL_REVISION", raising=False)
+    else:
+        monkeypatch.setenv("MARKDIFFUSION_MODEL_REVISION", env_revision)
+    upstream = _make_fake_upstream(tmp_path)
+    (upstream / "torch.py").write_text(FAKE_TORCH)
+    (upstream / "diffusers.py").write_text(FAKE_DIFFUSERS)
+    img = tmp_path / "img.png"
+    img.write_bytes(_minimal_png())
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(HARNESS_SCRIPT),
+            "detect",
+            str(img),
+            "--upstream-dir",
+            str(upstream),
+            "--device",
+            "cpu",
+            "--json",
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    # Scheduler and pipeline both load at the resolved revision.
+    assert r.stderr.count(f"MARKDIFFUSION_REVISION={expected!r}") == 2
+
+
 def test_cli_missing_purify_output(tmp_path: Path):
     img = tmp_path / "img.png"
     img.write_bytes(b"x")
@@ -190,6 +264,7 @@ def _build_args(mod, cmd: str, **overrides) -> object:
     args.cmd = cmd
     args.upstream_dir = None
     args.model = "fake/model"
+    args.revision = None
     args.device = "cpu"
     args.offline = False
     args.force_text = False
@@ -224,7 +299,7 @@ def test_cmd_detect_with_fake_upstream(
     monkeypatch.setattr(
         mod,
         "_load_diffusion",
-        lambda model, device, offline, size: (object(), object()),
+        lambda model, device, offline, size, revision: (object(), object()),
     )
     args = _build_args(mod, "detect", path=str(img))
     rc = mod._cmd_detect(args, upstream, "TR")
@@ -245,7 +320,7 @@ def test_cmd_detect_p_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         mod,
         "_load_diffusion",
-        lambda model, device, offline, size: (object(), object()),
+        lambda model, device, offline, size, revision: (object(), object()),
     )
     args = _build_args(mod, "detect", path=str(img), detector_type="p_value")
     assert mod._cmd_detect(args, upstream, "tr") == 0
@@ -261,7 +336,7 @@ def test_cmd_watermark_with_fake_upstream(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(
         mod,
         "_load_diffusion",
-        lambda model, device, offline, size: (object(), object()),
+        lambda model, device, offline, size, revision: (object(), object()),
     )
     args = _build_args(
         mod,
@@ -285,7 +360,7 @@ def test_cmd_purify_with_fake_upstream(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(
         mod,
         "_load_diffusion",
-        lambda model, device, offline, size: (object(), object()),
+        lambda model, device, offline, size, revision: (object(), object()),
     )
     args = _build_args(mod, "purify", path=str(img), output=str(out))
     assert mod._cmd_purify(args, upstream) == 0
