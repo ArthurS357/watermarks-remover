@@ -21,7 +21,7 @@ não executado; registrado como limitação do ambiente, não pulado por escolha
 | Q7 | `--stop` sai com 1 em recusa | 48d3c25 | RED confirmado antes do fix; 3 testes de pinning atualizados (`test_stop_never_kills_*`) |
 | R6-01 | Cobertura via subprocess-coverage (opt-in) | 9cfc3a9 | `make test-cov-subprocess`; verificado manualmente (`inspect_file.py` 0%→40%) já que `make` não está disponível neste ambiente |
 | R6-02 | Testes para `clean_ctrlregen.py` | 9cfc3a9 (mesma wiring) | resolvido pela medição, não por testes novos: 73% via subprocess-coverage, acima da meta de 40% — mock de CLI descartado, não valia a pena |
-| R6-03 | `_LOOPBACK_HOSTS` duplicado | (já resolvido na R5) | confirmado: `common.LOOPBACK_HOSTS` já era a única definição; só faltava propagar a 3 chamadores, feito em 251bf26 |
+| R6-03 | `_LOOPBACK_HOSTS` duplicado | (já resolvido na R5) | confirmado: `common.LOOPBACK_HOSTS` já era a única definição; só faltava propagar a 3 chamadores, feito em 251bf26. **Nota (R7-06):** a R5 centralizou em `common.py` mas não propagou a 3 chamadores. Rodadas futuras: "centralizado em X" ≠ "todos os chamadores usam X". |
 | R6-04 | `logging` stdlib no serviço | — (mantido) | `eprint()` cobre CLI e serviço; migrar é projeto separado |
 | R6-05 | Refatorar 4 funções grandes (C901) | — (mantido) | 44 funções C901 são despacho inerente; ponytail degrau 1 |
 | R6-06 | README subdocumenta flags CLI | 8f495f7 | `--json`, `--in-place`, `--stylometry`/`--threshold` |
