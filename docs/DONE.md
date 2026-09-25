@@ -2,6 +2,53 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Rodada R8 — 2026-09-25 — Pin de revisão HF no MarkDiffusion
+
+| Medida | Início | Fim |
+|---|---|---|
+| Testes coletados / passed / skipped | 750 / 743 / 7 | 755 / 748 / 7 (+5 testes, 0 regressões) |
+| `ruff check .` e `ruff format --check .` | limpos | limpos |
+| `mypy --strict markdiffusion_harness.py` | erros preexistentes | os mesmos (delta 0) |
+
+| ID | Item | Commit | Nota |
+|---|---|---|---|
+| R8-01 | `markdiffusion_harness.py` carregava o modelo do `main` mutável | 7d053bd | Mesmo padrão do R7-01 (6a97ae9). Detalhe abaixo |
+
+- **Pin:** `DEFAULT_MODEL_REVISION = "f71d7867a2745c420aa93441638b119c85995963"`, o `main`
+  atual do `huanzi05/stable-diffusion-2-1-base`. O repo é um espelho numa conta pessoal e só
+  tem 2 commits, `522fda6` ("initial commit") e `f71d786` (o upload), ambos de 2025-11-19.
+  Qualquer cache existente já está nesse commit, então o `--offline` continua funcionando.
+- **Resolução** (`_load_diffusion`, por onde passam watermark, detect e purify): usa
+  `--revision` ou `MARKDIFFUSION_MODEL_REVISION` (vazio conta como não definido). Sem nenhum
+  dos dois, usa o pin se `--model` for o `DEFAULT_MODEL` (comparação sem diferenciar
+  maiúsculas) e `main` para outro modelo. `revision=` vai para as **duas** cargas: o
+  scheduler (`subfolder="scheduler"`) e o pipeline. O `image_meta.run_markdiffusion_purify`
+  só passa `--model` quando recebe um valor, e o default desse valor é `None`, então herda o
+  pin. Nenhum código copia o nome do modelo, e por isso não precisa de guarda de drift.
+- **Como bumpar:** fazer `GET https://huggingface.co/api/models/huanzi05/stable-diffusion-2-1-base/revision/main`,
+  pegar o campo `sha` e atualizar `DEFAULT_MODEL_REVISION` e `PINNED` em
+  `tests/test_markdiffusion_harness.py`.
+- **Bandit:** o B615 dá 0 antes e 0 depois. O plugin só casa chamadas via
+  `transformers`/`datasets`/`huggingface_hub`, e diffusers nunca é escaneado, então o scanner
+  não prova nada aqui. A prova é o teste `test_cli_revision_resolution`: 5 casos, com fakes
+  de `torch` e `diffusers` escritos só no upstream do teste (o processo do pytest não é
+  poluído).
+  - **RED no código antigo, pelo motivo certo:** 4 casos com `revision=None` nas duas
+    cargas, e o caso de override com `unrecognized arguments: --revision`.
+  - **Mutação feita pelo `python-reviewer`:** tirar `revision=` do scheduler ou do pipeline,
+    tirar o `.lower()` e tirar o `or None` são todos pegos pelo teste.
+- **`.env.example`:** documenta `MARKDIFFUSION_MODEL_REVISION`. O exemplo de
+  `MARKDIFFUSION_MODEL` passou a ser o próprio default. O exemplo antigo
+  (`runwayml/stable-diffusion-v1-5`) não era o default, então descomentá-lo derrubava o pin
+  sem aviso.
+- **Revisão:** `python-reviewer` deu PASS (0 CRITICAL/HIGH). A recomendação de testar o
+  repasse de `args.revision` nos call sites de watermark e purify **não foi aplicada**: o
+  repasse é trivial, e se um deles regredir o pin padrão continua valendo.
+- **Limite conhecido:** o pacote upstream `markdiffusion` pode baixar outros modelos do Hub
+  por conta própria (por exemplo, o captioner do SEAL), sem revisão fixa. Esses downloads
+  estão fora do alcance deste pin e não foram verificados, porque o pacote não está
+  instalado aqui.
+
 ## Rodada R7 — 2026-09-25 — Fechamento dos resíduos da R6
 
 | Medida | Início | Fim |
@@ -60,7 +107,7 @@ O plano foi escrito antes de qualquer edição, em a713bbd (`docs/TODO.md`).
   `code-reviewer` (inline) deu Approve.
 - **Fora de escopo, observado:** `markdiffusion_harness.py` chama o `from_pretrained` do
   diffusers sem `revision`, e o B615 não cobre diffusers. É candidato a R8 e foi aberto como
-  tarefa separada.
+  tarefa separada. **Resolvido na R8 (7d053bd).**
 
 ### R7-04 — `make test-cov-subprocess`
 
