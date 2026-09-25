@@ -33,7 +33,7 @@ não executado; registrado como limitação do ambiente, não pulado por escolha
 | REC-02 | Slowloris no corpo | — (mantido) | exige refatoração do loop |
 | REC-03 | 44 funções > C901 10 | — (mantido, = R6-05) | |
 | REC-04 | `S101` ignorado globalmente | — (mantido) | `assert` em produção é narrowing deliberado |
-| REC-05 | HF Hub sem pin de revisão (B615) | 2650c4d | `--revision`/`MARKLLM_MODEL_REVISION`, default `"main"` (sem mudança de comportamento); bandit B615 0 achados após |
+| REC-05 | HF Hub sem pin de revisão (B615) | 2650c4d | `--revision`/`MARKLLM_MODEL_REVISION`, default `"main"` (sem mudança de comportamento); bandit B615 0 achados após. **Corrigido na R7 (R7-01):** esse "0" era falso negativo. O B615 não avalia `revision=` não-literal, e o default ainda era o `main` mutável. O pin real está na seção R7. |
 | REC-06 | 17 env vars internas sem doc | 8f495f7 | ~20 vars documentadas em `.env.example` (incluindo as 2 novas desta rodada) |
 | REC-07 | `urlopen_no_redirect` não valida scheme | — (mantido) | chamadores já validam |
 | — | Reconciliação de 19 arquivos + trabalho da R5 não commitado | 251bf26, c899a59, 7824c98 | bearer-token-via-redirect, non-ASCII API key, Content-Length não-decimal, spec OpenAPI, cleanup de código |

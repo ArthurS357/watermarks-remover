@@ -31,6 +31,7 @@ FAKE_TRANSFORMERS = (
     "class AutoTokenizer:\n"
     "    @staticmethod\n"
     "    def from_pretrained(name, **kwargs):\n"
+    "        print('MARKLLM_PRETRAINED_KWARGS=' + repr(kwargs), file=sys.stderr)\n"
     "        return object()\n"
 )
 
@@ -275,6 +276,61 @@ def test_cli_detect_offline_flag(tmp_path: Path):
     assert r.returncode == 0, r.stderr
     assert "local_files_only" in (r.stderr or "")
     assert "True" in (r.stderr or "")
+
+
+PINNED = "3f5c25d0bc631cb57ac65913f76e22c2dfb61d62"
+
+
+@pytest.mark.parametrize(
+    ("extra", "env_revision", "expected"),
+    [
+        ((), None, PINNED),  # default model -> pinned SHA
+        ((), "", PINNED),  # empty MARKLLM_MODEL_REVISION counts as unset
+        (("--model", "Facebook/OPT-1.3b"), None, PINNED),  # Hub ids are case-insensitive
+        (("--model", "org/other-model"), None, "main"),  # pin belongs to the default model only
+        (("--revision", "abc1234"), None, "abc1234"),  # explicit override wins
+    ],
+)
+def test_cli_revision_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: tuple[str, ...],
+    env_revision: str | None,
+    expected: str,
+):
+    monkeypatch.delenv("MARKLLM_MODEL", raising=False)
+    if env_revision is None:
+        monkeypatch.delenv("MARKLLM_MODEL_REVISION", raising=False)
+    else:
+        monkeypatch.setenv("MARKLLM_MODEL_REVISION", env_revision)
+    upstream = _make_fake_upstream(tmp_path)
+    f = tmp_path / "t.txt"
+    f.write_text("hello world")
+    r = _run_adapter(
+        "detect",
+        str(f),
+        "--scheme",
+        "kgw",
+        "--upstream-dir",
+        str(upstream),
+        "--device",
+        "cpu",
+        *extra,
+    )
+    assert r.returncode == 0, r.stderr
+    # Tokenizer and model both load at the resolved revision.
+    assert r.stderr.count(f"'revision': '{expected}'") == 2
+
+
+def test_caller_default_models_match_pinned_model():
+    # The pin only applies when --model equals DEFAULT_MODEL; these callers pass
+    # their own copy, so a drift would silently fall back to the mutable main.
+    import bench_synthid_text
+    import detect_text_watermark
+    import rewrite_text
+
+    assert rewrite_text.DEFAULT_MARKLLM_MODEL == detect_text_watermark.DEFAULT_MODEL
+    assert bench_synthid_text.DEFAULT_MARKLLM_MODEL == detect_text_watermark.DEFAULT_MODEL
 
 
 def test_cli_config_too_large(tmp_path: Path):

@@ -51,6 +51,10 @@ SCHEMES = {
 }
 
 DEFAULT_MODEL = "facebook/opt-1.3b"
+# Immutable HF Hub commit for DEFAULT_MODEL, so a push to the repo's `main` is
+# never picked up silently (bandit B615). To bump: take `sha` from
+# https://huggingface.co/api/models/facebook/opt-1.3b/revision/main
+DEFAULT_MODEL_REVISION = "3f5c25d0bc631cb57ac65913f76e22c2dfb61d62"
 
 # Algorithm configs are ~200 B (KGW/SynthID). Cap well above that so a crafted
 # or accidental huge file is refused before either this script or upstream
@@ -97,7 +101,7 @@ def _load_algorithm(
     offline: bool = False,
     temperature: float | None = None,
     top_p: float | None = None,
-    revision: str = "main",
+    revision: str | None = None,
 ):
     """Import the checkout and build an ``AutoWatermark`` instance.
 
@@ -125,6 +129,9 @@ def _load_algorithm(
     if offline:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     load_kwargs = {"local_files_only": True} if offline else {}
+    if revision is None:
+        # The pin is only known for DEFAULT_MODEL; another --model stays on main.
+        revision = DEFAULT_MODEL_REVISION if model.lower() == DEFAULT_MODEL else "main"
 
     tokenizer = AutoTokenizer.from_pretrained(model, revision=revision, **load_kwargs)
     lm = AutoModelForCausalLM.from_pretrained(model, revision=revision, **load_kwargs).to(device)
@@ -531,8 +538,10 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--revision",
-        default=os.environ.get("MARKLLM_MODEL_REVISION", "main"),
-        help="HF Hub revision (commit SHA or tag) to pin --model to (default: main)",
+        default=os.environ.get("MARKLLM_MODEL_REVISION") or None,
+        help="HF Hub revision (commit SHA or tag) to pin --model to (default: "
+        f"$MARKLLM_MODEL_REVISION, else {DEFAULT_MODEL_REVISION[:7]} for {DEFAULT_MODEL}, "
+        "else main)",
     )
     p.add_argument(
         "--device",
