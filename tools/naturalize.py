@@ -333,6 +333,30 @@ def _payload(
     return source.encode(result.text)
 
 
+def _deliver(
+    args: argparse.Namespace,
+    source: Source,
+    result: engine.Result,
+    data: bytes,
+    output: Path | None,
+) -> None:
+    """Write the file (--in-place), then the result to --output or stdout (raises OSError)."""
+    if args.in_place and result.changed:
+        write_atomically(source.path.resolve(), source.encode(result.text), source.stamp)
+        print(
+            f"escrito em {source.path} ({len(result.transforms)} transformações)", file=sys.stderr
+        )
+    if output is not None:
+        write_atomically(output, data)
+        print(f"resultado escrito em {output}", file=sys.stderr)
+    elif not (args.in_place and args.format == "text"):
+        if sys.stdout.isatty():
+            data = data.decode("utf-8").translate(_TERMINAL_UNSAFE).encode("utf-8")
+        sys.stdout.flush()
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     detect.utf8_streams()
@@ -367,20 +391,8 @@ def main(argv: list[str] | None = None) -> int:
     mode = "diff-only" if args.diff_only else "in-place" if args.in_place else "stdout"
     wants_report = args.format != "text" or args.diff_only  # the diff is the costly part
     report = build_report(source, result, mode, notes) if wants_report else {}
-    data = _payload(args, source, result, report)
     try:
-        if args.in_place and result.changed:
-            write_atomically(path.resolve(), source.encode(result.text), source.stamp)
-            print(f"escrito em {path} ({len(result.transforms)} transformações)", file=sys.stderr)
-        if output is not None:
-            write_atomically(output, data)
-            print(f"resultado escrito em {output}", file=sys.stderr)
-        elif not (args.in_place and args.format == "text"):
-            if sys.stdout.isatty():
-                data = data.decode("utf-8").translate(_TERMINAL_UNSAFE).encode("utf-8")
-            sys.stdout.flush()
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
+        _deliver(args, source, result, _payload(args, source, result, report), output)
     except OSError as exc:
         print(f"erro: não foi possível escrever: {exc.strerror}", file=sys.stderr)
         return 1

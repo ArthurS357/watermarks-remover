@@ -73,7 +73,7 @@ def main() -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Back up and replace an existing Cursor installation",
+        help="Back up and replace an existing installation",
     )
     parser.add_argument(
         "--skill",
