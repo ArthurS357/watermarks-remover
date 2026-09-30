@@ -1,0 +1,21 @@
+# Only the optional dependency group of the stylometry tools (tools/detect_ai_patterns.py and
+# tools/measure_skill_effectiveness.py). Nothing else lives here on purpose: ruff.toml, pytest.ini
+# and .coveragerc keep configuring their tools, and there is no [project] table, so
+# `requires-python` stays unset (the detector reads it to decide on future_annotations_on_314).
+#
+# Install WITHOUT touching the rest of the environment:
+#     uv pip install --group formats        (or: pip install --group formats)
+#     uv sync --inexact --group formats
+# Plain `uv sync --group formats` is an exact sync: it removes everything not in the group,
+# pytest and ruff included.
+#
+# Without this group the tools still run: .docx/.pdf files are skipped with a warning and
+# .ts/.tsx/.js/.jsx are analysed by regex (confidence capped at "low").
+# A PDF encrypted with AES also needs `cryptography`, which is deliberately not pulled in.
+[dependency-groups]
+formats = [
+    "python-docx>=1.2",
+    "pypdf>=6.19",
+    "tree-sitter>=0.26",
+    "tree-sitter-typescript>=0.23",
+]

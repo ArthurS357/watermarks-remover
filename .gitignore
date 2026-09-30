@@ -40,6 +40,7 @@
 !/install_skill.py
 !/LICENSE
 !/Makefile
+!/pyproject.toml
 !/pytest.ini
 !/README.md
 !/requirements-dev.txt
