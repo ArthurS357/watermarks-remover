@@ -2,6 +2,126 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Estado do sistema — 2026-09-30
+
+| ID | Item | Estado | Commit |
+|---|---|---|---|
+| R10-01 | Sinais de texto (21) | ✅ fechado | 3f7aff8 |
+| R10-02 | Sinais de código (16, dos quais 4 só de TS/JS) | ✅ fechado | 6a4ca93, dd07e5d, 70b3c2f |
+| R10-05 | Carregadores de formato e processo filho isolado | ✅ fechado | c3f90d0, c65b66b, f4a7b27 |
+| R10-03 | CLI `detect_ai_patterns` | ✅ fechado | 14fe38c |
+| R10-04 | CLI `measure_skill_effectiveness` | ✅ fechado | 969ece2 |
+| R10-06 | `pyproject.toml` com `[dependency-groups].formats` | ✅ fechado | 34b5826 |
+| R10-07 | README, seção "Detecção estilométrica" | ✅ fechado | ff7916f, f3db001 |
+| R10-08 | `.gitignore` libera `tools/` e `pyproject.toml` | ✅ fechado | 3f7aff8, 34b5826 |
+| R10-09 | Dogfooding e registro | ✅ fechado | este commit |
+
+| Medida | Valor final (HEAD `f3db001`) |
+|---|---|
+| Testes, `.venv` sem o grupo `formats` | 1262 coletados / 1192 passed / 70 skipped, 0 falhas, exit 0 |
+| Testes, `.venv` com `formats` instalado | 1262 coletados / 1254 passed / 8 skipped, 0 falhas, exit 0 |
+| Os 755 de antes | Os 748 passed seguem passando e os 7 skips são os mesmos. Os outros skips são da R10: 62 sem as libs opcionais e 1 de symlink sem privilégio no Windows |
+| Cobertura de ramo (com `formats`, `--cov=tools`) | `tools/stylometry/*.py` 100%. Os 2 CLIs 99%, só falta o `sys.exit(main())`, que roda nos testes de subprocess |
+| `ruff check .` e `ruff format --check .` | limpos (117 arquivos) |
+| `mypy --strict` nos 7 arquivos de `tools/` | limpo |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades, também com `formats` instalado. Eram 3 no início (`urllib3` 2.7.0) |
+| Bandit, `-r tools/` | 0 achados em 2000 linhas. `-r service/scripts/` segue em Low 32 / Medium 1 / High 0 |
+| `service/` e `skills/` | Sem diff desde o baseline `2302a15` |
+
+**R10 pronta para uso: sim.** Os dois scripts rodam sem o grupo opcional (avisam e seguem) e com ele. Nenhum arquivo do serviço HTTP nem das skills mudou, e nenhum `git push` foi feito.
+
+**Riscos residuais que não bloqueiam uso:**
+- **Limiares sem calibração.** Pesos, faixas e o divisor 8 do score são escolha desta ferramenta, sem corpus. O `disclaimer` diz isso em toda saída. O repositório pontua alto contra si mesmo nos próprios documentos.
+- **Primeiro run da CI pendente.** Nada foi pushado. O teste de symlink (sem privilégio aqui) e os de POSIX só rodam no Linux/macOS da CI. O de junction só roda no Windows.
+- **Memória do processo filho sem teto do SO.** O Windows não tem `RLIMIT`. O que limita o dano é o teto por stream do PDF (5 MB), o teto de 20 MB descomprimidos do DOCX e o timeout de 30 s, não um limite em bytes.
+- **HTML lido no processo pai, sem timeout.** 1 MB de `<` levou 2,4 s no Python 3.14.4. O teto de 1 MB limita, mas não medi os patches antigos do 3.12 da CI.
+- **Vazamento de estado entre testes.** O de `PIL` falso foi corrigido (3634dbc). Outro teste antigo pode deixar sujeira parecida e só aparecer quando algo novo importar a lib.
+- **Guarda do `.gitignore` parcial.** O teste cobre `pyproject.toml` e `tools/**/*.py`. Uma pasta nova na raiz continua nascendo ignorada até entrar na allowlist.
+- **Medição do `/clean-user-facing-text` é n = 1**, feita por mim e sobre um documento técnico cheio de tabelas. Não generaliza.
+
+## Rodada R10 — 2026-09-30 — Detecção estilométrica e medição de efetividade
+
+| Medida | Início (`2302a15`) | Fim (`f3db001`) |
+|---|---|---|
+| Testes coletados / passed / skipped | 755 / 748 / 7 | 1262 / 1192 / 70 sem `formats`; 1262 / 1254 / 8 com `formats` (+507 testes, 0 regressões) |
+| `ruff check .` e `ruff format --check .` | limpos (102 arquivos) | limpos (117 arquivos) |
+| `pip-audit` (`.venv`) | 3 (`urllib3` 2.7.0) | 0 |
+
+O plano foi escrito antes de qualquer edição, em 868478e (`docs/TODO.md`). As diferenças entre ele e o que saiu estão em "Ajustes durante a execução" (J1 a J11), no mesmo arquivo.
+
+### O que saiu
+
+- **`tools/detect_ai_patterns.py`** e o pacote `tools/stylometry/` (`text.py`, `code.py`, `loaders.py`, `isolate.py`): 37 sinais com linha e trecho, em texto (`.md .txt .html .docx .pdf`) e código (`.py .ts .tsx .js .jsx`). Determinístico: regex, `ast`, `tokenize`, tree-sitter quando instalado. A saída nunca traz `is_ai`: só `signals`, `score`, `confidence` e `disclaimer`.
+- **`tools/measure_skill_effectiveness.py`**: antes/depois de arquivo ou pasta (pareada pelo caminho relativo), com `delta`, sinais eliminados, restantes e introduzidos, faixa de `effectiveness` e uma `recommendation` que nomeia o pior sinal que sobrou e o que fazer com ele.
+- **`pyproject.toml`** só com `[dependency-groups].formats`. Sem `[project]` e sem `[tool.*]`: conferido que `ruff`, `pytest` e `coverage` continuam lendo `ruff.toml`, `pytest.ini` e `.coveragerc`.
+- **Testes** em arquivos próprios (`test_stylometry_text/code/loaders/isolate.py`, `test_detect_ai_patterns.py`, `test_measure_skill_effectiveness.py`, `test_pyproject_formats_group.py`), todos abaixo de 800 linhas.
+
+### Registros pedidos
+
+- **`urllib3` (ação local, como a Q6 da R6).** O `pip-audit` do baseline achou 3 vulnerabilidades no `urllib3` 2.7.0 (CVE-2026-97687, 97688 e 97689, correção em 2.8.0). Ele é transitivo do `pip-audit`/`requests` na `.venv` de dev e não entra no serviço. Na retomada o usuário mandou subir: `uv pip install --upgrade urllib3` levou a 2.8.0 e o `pip-audit` voltou a 0. Depois, com o grupo `formats` instalado, continuou em 0.
+- **Teto de blocos.** O prompt fala em 330k. O repo não tinha esse número; tomei como o máximo de blocos que cabe no teto de 1 MB (1 000 000 / 3 bytes = 333 333, com blocos `a\n\n`). O teto real é `MAX_BLOCKS = 50_000`. Medido: 50k blocos levam 1,57 s; um arquivo de 1 MB com 333 mil blocos leva 2,85 s (analisa os 50k primeiros e avisa na saída), contra 10,23 s se o teto subisse para cobrir tudo. Um documento real de 1 MB tem ~21 mil blocos (1,93 s). **Decisão: manter 50k.** Se o número que você tinha em mente era outro, diga.
+- **`.gitignore` deny-by-default como padrão de falha recorrente.** O `.gitignore` é `/*` mais uma allowlist, então todo arquivo ou pasta novo na raiz nasce ignorado em silêncio: `git status` não mostra e `git add .` não reclama. Já tinha mordido na R6 (launcher, R6-11, 48d3c25) e mordeu duas vezes aqui, com `tools/` (3f7aff8) e `pyproject.toml` (34b5826). Defesa agora: `test_files_the_round_adds_are_not_swallowed_by_the_deny_by_default_gitignore` falha se `pyproject.toml` ou qualquer `tools/**/*.py` estiver ignorado. Ao criar algo na raiz, rode `git check-ignore <caminho>` (sem `-v`: com ele o `git` também lista os padrões de negação e sai com 0 mesmo para arquivo liberado).
+- **Achado de teste, não de produto.** `tests/test_markdiffusion_harness.py`, anterior à R10, deixava um `PIL` falso em `sys.modules`. Com `formats` instalado, o primeiro `import pypdf` (que lê `PIL.__version__`) falhava: 10 testes de PDF quebraram na suíte completa e passavam isolados. Achado por bissecção e corrigido com uma fixture autouse (3634dbc), sem mudar nenhum assert.
+
+### Revisões
+
+- **`python-review`** sobre `tools/stylometry/`: FAIL com 7 ALTA (21 bytes travando o parser TSX, `obvious_comment` com 12 s em 40 KB, 3 regex quadráticos, `RecursionError` escapando, zip-bomb pelo cabeçalho). Reproduzidos e corrigidos em dd07e5d, c65b66b e c3f90d0, cada um com teste de regressão.
+- **`code-reviewer`** sobre o diff acumulado (868478e..14fe38c): 0 crítico, 2 maior, 1 menor, **Request Changes**. Reproduzidos antes de corrigir: um `.docx` com stream deflate corrompido levantava `zlib.error`, que escapava de `load()` e derrubava o scan inteiro; `os.walk(followlinks=False)` ainda entra em junction do Windows; nome de arquivo com escape chegava ao terminal e ao markdown. Corrigidos em f4a7b27.
+
+### Dogfooding (FASE 4)
+
+Comando exato do prompt, com a venv que tem `formats`: `python tools/detect_ai_patterns.py . --format md --output stylometry-report.md`. Rodou em 4 s, exit 0, 140 arquivos (html 1, javascript 1, markdown 28, python 93, text 16, tsx 1). O relatório **não foi commitado** (o `.gitignore` já o ignora). Medido no HEAD `70b3c2f`.
+
+**A primeira execução achou um erro do detector.** O sinal mais frequente era `type_hint_on_trivial_local`, em 37 arquivos, quase todos `x: list[T] = []` ou `x: T | None = None`, onde o `mypy --strict` exige a anotação. O sinal foi restringido à anotação que só repete o tipo de um literal escalar (70b3c2f) e caiu para 1 arquivo (a fixture). Os números abaixo são da segunda execução.
+
+**Os 5 maiores scores** (3 são fixtures de teste, carregadas de sinais de propósito):
+
+| # | Arquivo | Score | Confiança | Sinais dominantes |
+|---|---|---|---|---|
+| 1 | `tests/fixtures/stylometry/text_ai_like.md` | 0.89 | medium | `template_heading`, `em_dash_to_comma_ratio`, `paragraph_uniformity` (todos high) |
+| 2 | `tests/fixtures/stylometry/code_ai_like.py` | 0.67 | medium | `obvious_comment` (high, 7), `comment_density` (high, 0.28) |
+| 3 | `README.md` | 0.43 | high | `bold_lead_in` (high, 43), `comparison_table_symmetry` (medium) |
+| 4 | `tests/fixtures/stylometry/code_ai_like.tsx` | 0.39 | low | `explicit_return_types_on_arrow` (medium), `jsdoc_on_trivial_type`, `as_const_everywhere` |
+| 5 | `docs/DONE.md` | 0.35 | high | `bold_lead_in` (high, 21), `comparison_table_symmetry` (medium) |
+
+Sem as fixtures, a ordem é `README.md` 0.43, `docs/DONE.md` 0.35, `docs/TODO.md` 0.34, `skills/remove-ai-marks/references/vendor-notes.md` 0.34 e `.github/ISSUE_TEMPLATE/bug_report.md` 0.31 (confiança low). O script de serviço mais alto é `service/scripts/image_meta.py`, com 0.42 antes da correção do J7.
+
+**Sinais que o repo dispara em si mesmo, por número de arquivos:** `bold_lead_in` (11, high), `em_dash_to_comma_ratio` (10, high), `template_heading` (8, high), `comment_density` (7, high), `excessive_params` (6, high), `generic_try_except` (5, high). Nos documentos é o negrito de abertura e as tabelas, que são o formato que este repo usa; no código do serviço são funções com muitos parâmetros (`rewrite` tem 20) e `except Exception: pass`.
+
+**Efetividade medida do `/clean-user-facing-text` sobre o `docs/DONE.md`** (versão do HEAD `70b3c2f`, antes desta seção). A skill foi invocada via `Skill`, e a cópia reescrita foi feita por mim, seguindo-a, fora do git. A passada `inspect_text.py` / `clean_text.py` não achou caractere invisível (0 no original e 0 na cópia, byte a byte idêntica depois do `clean_text.py`). Os 227 trechos em crase e os 27 hashes do original estão na cópia sem perda.
+
+| | Antes | Depois |
+|---|---|---|
+| Score | 0.3531 | 0.3663 |
+| Delta | | **+0.0132** |
+| Efetividade | | **low** (confiança high) |
+| Eliminado | | `em_dash_to_comma_ratio` |
+| Restantes | | `bold_lead_in` (high, 21 → 21), `comparison_table_symmetry` (medium) |
+| Introduzido | | `em_dash_density` (low, 0.243) |
+
+O resultado é coerente com o que a skill faz: ela reescreve a prosa e preserva formatação, código, tabelas e identificadores, e é exatamente a estrutura markdown que dá o score deste arquivo (negrito de abertura e tabela). Os travessões que sobraram estão em títulos e células de tabela, protegidos. Como a cópia ficou com frases mais longas, eles passaram a pesar mais por frase, o que acendeu `em_dash_density`. **Limites:** n = 1, aplicado por mim, em documento técnico atípico, e desfiz a quebra de linha dura (350 → 249 linhas), o que não é pedido da skill. Mostra o efeito desta aplicação, não o da skill em geral.
+
+### Skills invocadas (para cruzar com o transcript)
+
+Extraído do transcript da sessão: 13 chamadas à tool `Skill`.
+
+| # | Skill | Fase | Propósito |
+|---|---|---|---|
+| 1 | `ponytail-review` (sem namespace) | 0 | **Falhou:** `Unknown skill`. O nome certo é `ponytail:ponytail-review` |
+| 2 | `ponytail:ponytail-review` | 0 | Gate. Régua de over-engineering da rodada |
+| 3 | `ponytail:ponytail-debt` | 0 | Gate. Ledger `ponytail:`: 0 marcadores em `tools/` e `tests/`, conferido de novo na FASE 5 |
+| 4 | `python-pro` | 0 | Gate. Padrões Python 3.12+ (alvo `py312`) no código novo |
+| 5 | `py-test-quality` | 0 | Gate. Cobertura de ramo: 100% em `tools/stylometry/`, 99% nos CLIs |
+| 6 | `py-security` | 0 | Gate. Entrada hostil (zip-bomb, ReDoS, processo filho), `bandit` em `tools/` (0), `pip-audit` (o `urllib3`) |
+| 7 | `py-code-health` | 0 | Gate. `vulture` em `tools/`: 1 item, falso positivo (`attrs`, parâmetro obrigatório de `HTMLParser.handle_starttag`) |
+| 8 | `py-typing` | 0 | Gate. `mypy --strict` limpo nos 7 arquivos de `tools/` |
+| 9 | `caveman` | 0 | Gate. Estilo de saída |
+| 10 | `python-test` | 0 | Gate. Baseline 755 / 748 / 7 e leitura das execuções da suíte, com e sem `formats` |
+| 11 | `python-review` (condicional) | 2 | Gatilho: código que lê arquivo não confiável. `python-reviewer`: FAIL, 7 ALTA, corrigidas |
+| 12 | `code-reviewer` (condicional) | retomada, após o bloco 4 | Gatilho atingido no bloco 4 e **omitido até a retomada**. Request Changes, corrigido em f4a7b27 |
+| 13 | `clean-user-facing-text` | 4 | Objeto da medição de efetividade. Não faz parte do gate |
+| — | `python-type` (condicional) | — | **Não invocado.** O `mypy --strict` passou sem erro, então não havia erro de tipo para resolver |
+
 ## Estado do sistema — 2026-09-25
 
 | ID | Item | Estado | Commit |

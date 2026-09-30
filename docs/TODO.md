@@ -2,7 +2,9 @@
 
 ## Rodada R10 — 2026-09-30 — Detecção estilométrica e medição de efetividade
 
-Em andamento. Duas entregas independentes, **scripts CLI isolados** (não tocam
+Concluída em 2026-09-30. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-09-30). O plano
+abaixo é o que foi escrito antes de qualquer edição; o que mudou na execução está em
+"Ajustes durante a execução", no fim desta seção. Duas entregas independentes, **scripts CLI isolados** (não tocam
 `service/scripts/server.py` nem as skills): `tools/detect_ai_patterns.py` (sinais
 estilométricos em texto e código) e `tools/measure_skill_effectiveness.py` (antes/depois).
 Uso pessoal: o output ajuda a revisar o que você escreveu, não a acusar terceiros. Nunca emite
@@ -19,8 +21,9 @@ Uso pessoal: o output ajuda a revisar o que você escreveu, não a acusar tercei
 O `pip-audit` divergiu da R9 por advisories publicados depois dela. `urllib3` é transitivo do
 `pip-audit`/`requests` na `.venv` de dev, não está em `requirements-dev.txt` e não entra no
 serviço. O critério explícito de parada (755/748/7) bate, então a rodada segue. "Sem novas
-vulnerabilidades" da FASE 5 é medido contra estes 3. **Decisão do usuário pendente:** subir o
-`urllib3` na `.venv` (ação local, como a Q6 da R6). Não foi feito nesta rodada.
+vulnerabilidades" da FASE 5 é medido contra estes 3. **Resolvido na retomada:** o usuário
+mandou subir o `urllib3` na `.venv` (ação local, como a Q6 da R6). `uv pip install --upgrade
+urllib3` levou de 2.7.0 a 2.8.0 e o `pip-audit` voltou a 0.
 
 ### Achados da FASE 0 que mudam premissas do prompt
 
@@ -64,7 +67,8 @@ as instruções de instalação do grupo chegam no bloco 6 junto com o `pyprojec
 - `Signal(name, value, severity, line, snippet)`, `NamedTuple`. Sinal por ocorrência: `value` =
   total daquele sinal no arquivo, `line` = linha da ocorrência. Sinal de documento (métricas):
   `line = None`. `severity` ∈ low | medium | high.
-- **Score** = `min(1.0, Σ peso(categoria) × força(severidade máxima de cada sinal) / 8.0)`.
+- **Score** = `min(1.0, Σ peso(categoria) × força(severidade máxima de cada sinal) / 8.0)` no
+  plano. **Na execução virou `1 − e^(−Σ/8)`** (ver "Ajustes durante a execução").
   Força: low 0.33, medium 0.66, high 1.0. Peso: **estrutural 2.0, lexical 1.0, métrica 0.5**.
   Desvio deliberado de "média ponderada" pura: a média só dos sinais disparados dá 1.0 a um
   único sinal alto, e a média sobre o catálogo inteiro nunca passa de ~0.4, o que tornaria o
@@ -134,7 +138,7 @@ regex como fallback. O resultado marca qual dos dois rodou e o fallback limita `
 - **Pastas ignoradas por padrão:** `.git`, `.venv`, `venv`, `node_modules`, `__pycache__`,
   `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, `.code-review-graph`, `dist`, `build`. Sem isso,
   `detect_ai_patterns.py .` varreria a `.venv` inteira. `--ignore` soma a esta lista.
-  Arquivo maior que 2 MB é pulado com motivo. `--output` dentro da árvore varrida é pulado na
+  Texto maior que 1 MB (o plano dizia 2 MB) e binário maior que 25 MB são pulados com motivo. `--output` dentro da árvore varrida é pulado na
   própria execução.
 - **Saída:** `disclaimer` no topo do JSON e do relatório, dos dois CLIs. Arquivo sem dependência
   (`.docx`/`.pdf`) vira `skipped` com o motivo e o comando de instalação, sem abortar.
@@ -175,6 +179,24 @@ regex como fallback. O resultado marca qual dos dois rodou e o fallback limita `
   com `git status` e `git check-ignore` depois de cada bloco.
 - **R10-09:** a cópia reescrita é feita por mim, seguindo a skill. A medição mostra o efeito
   dessa aplicação, não da skill em geral.
+
+### Ajustes durante a execução
+
+O plano acima não foi reescrito: estas são as diferenças entre ele e o que saiu.
+
+| # | Plano | Execução | Motivo e commit |
+|---|---|---|---|
+| J1 | Score `min(1, Σ/8)` | `1 − e^(−Σ/8)` | A soma cortada batia 1.0 na fixture carregada e deixava uma reescrita parcial com delta 0, o que cegaria a R10-04. Fixture meio limpa: 0.67, contra 0.89 da cheia. 3f7aff8 |
+| J2 | Texto até 2 MB | Texto até 1 MB, binário até 25 MB | Reduz o pior caso de regex e `ast` em entrada hostil. dd07e5d |
+| J3 | Sem teto de blocos | `MAX_BLOCKS = 50_000`, com nota no relatório | Medido: 50k blocos levam 1,57 s. Um arquivo de 1 MB pode ter ~333 mil blocos (3 bytes cada, `a\n\n`): analisa os 50k primeiros em 2,85 s, contra 10,23 s se o teto subisse para cobrir tudo. Um documento real de 1 MB tem ~21 mil blocos (1,93 s). Mantido em 50k |
+| J4 | `try/except` largo e timeout | Processo filho morto no timeout (`tools/stylometry/isolate.py`), JSON no pipe (sem pickle), guarda de zip-bomb pelos bytes reais | O `python-reviewer` deu FAIL com 7 ALTA: 21 bytes travam o parser TSX segurando a GIL, `obvious_comment` levava 12 s em 40 KB, 3 regex quadráticos, `RecursionError` escapando de `analyze()` e zip-bomb confiando no tamanho do cabeçalho. dd07e5d, c65b66b, c3f90d0 |
+| J5 | Contexto implícito | `Context(small_project=False, requires_python=None)`: fato ausente deixa o sinal quieto | É a regra "sem contexto, não chuta" do plano, tornada explícita no tipo |
+| J6 | `obvious_comment`: `# Initialize/Set/Import...` antes de statement de 1 linha | Verbos ampliados (`increment`, `call`, `get`, `add`) e comentário que já explica o porquê (`:`, `(`, `because`, `since`, `see`) não conta | Menos falso positivo em comentário útil |
+| J7 | `type_hint_on_trivial_local`: `x: int = 0`, valor literal (inclui `[]` e `{}`) | Só a anotação que repete o tipo de um literal escalar (`x: int = 0`, `s: str = ""`) | O dogfooding pôs o sinal em 37 arquivos, quase todos `x: list[T] = []` e `x: T \| None = None`, onde o `mypy --strict` exige a anotação. 70b3c2f |
+| J8 | Leitores tolerantes a arquivo ruim | Também `zlib.error`/`LZMAError`/`EOFError` de `.docx` corrompido, junctions do Windows e nome de arquivo com escape | `code-reviewer` (0 crítico, 2 maior, 1 menor), reproduzidos antes de corrigir. f4a7b27 |
+| J9 | CLI de medição chama `scan` e herda seus avisos | `Options.warn`; `quote` e `utf8_streams` públicos | O aviso precisa dizer de que lado veio o arquivo pulado. 969ece2 |
+| J10 | README no bloco 4 | README depois dos dois CLIs, mais o parágrafo da A7 | O exemplo precisava da saída real. ff7916f, f3db001 |
+| J11 | — | Fixture autouse em `tests/test_markdiffusion_harness.py` | Os testes antigos deixavam um `PIL` falso em `sys.modules`; com o grupo `formats` instalado, o primeiro `import pypdf` depois disso quebrava 10 testes de PDF na suíte completa. 3634dbc |
 
 ## Rodada R9 — 2026-09-25 — Fechamento e verificação de uso
 
