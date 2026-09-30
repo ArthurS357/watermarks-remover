@@ -72,3 +72,11 @@ When the user asks for an audit, distinguish:
 - **Not established:** official detector evasion, human authorship, or removal of a vendor's secret-key watermark.
 
 For technical background, read `references/watermark-notes.md`. For misuse or disclosure questions, read `references/responsible-use.md`.
+
+## Quando o objetivo é reduzir detecção de IA (não só humanizar prosa)
+
+Esta skill reescreve a prosa para ela soar natural. Ela **não baixa** o score de `tools/detect_ai_patterns.py` (repositório `watermarks-remover`), e a medição mostra que não baixa. Não espere queda de score dela.
+
+- **Achado da R10 (2026-09-30).** Aplicada a `docs/DONE.md`, a skill levou o score de 0,3531 para 0,3663: **delta +0,0132, piorou** (efetividade `low`, confiança `high`). Ela eliminou `em_dash_to_comma_ratio` e introduziu `em_dash_density`: as frases ficaram mais longas, e os travessões que sobraram (em títulos e células de tabela, protegidos) passaram a pesar mais por frase. `bold_lead_in` e `comparison_table_symmetry`, que dominam aquele arquivo, não mudaram: são estrutura markdown, que esta skill preserva de propósito. É n = 1, aplicado à mão, em um documento técnico atípico: mostra o efeito daquela aplicação, não o da skill em geral.
+- **Alternativa determinística: `/naturalize`** (CLI `tools/naturalize.py` do mesmo repositório). Troca os hábitos estruturais que o detector conta (negrito de abertura, travessão denso, títulos de modelo, hedges duplos, "delve into", "vale notar que") e mede o efeito. Ela não reescreve frases: ritmo e vocabulário continuam sendo trabalho desta skill.
+- **Meça sempre:** `tools/measure_skill_effectiveness.py ANTES DEPOIS`. Delta negativo é melhora, e acima de zero piorou. O score é indicativo, não veredito.
