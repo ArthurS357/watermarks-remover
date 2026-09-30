@@ -235,12 +235,17 @@ def _docstring_echo(nodes: list[ast.AST]) -> list[Signal]:
     return occurrences("docstring_echoes_name", found, by_count(len(found), 1, 3, 6))
 
 
-def _is_literal(value: ast.expr) -> bool:
-    if isinstance(value, ast.Constant):
-        return True
-    if isinstance(value, ast.Dict):
-        return not value.keys
-    return isinstance(value, ast.List | ast.Set | ast.Tuple) and not value.elts
+def _repeats_literal(annotation: ast.expr, value: ast.expr) -> bool:
+    """``x: int = 0``: an annotation that only repeats the type of a scalar literal.
+
+    ``x: list[str] = []``, ``x: str | None = None`` and ``x: float = 0`` are not trivial: the
+    annotation says what the value cannot, and ``mypy --strict`` asks for it.
+    """
+    return (
+        isinstance(value, ast.Constant)
+        and isinstance(annotation, ast.Name)
+        and annotation.id == type(value.value).__name__
+    )
 
 
 def _trivial_locals(nodes: list[ast.AST], lines: list[str]) -> list[Signal]:
@@ -253,7 +258,7 @@ def _trivial_locals(nodes: list[ast.AST], lines: list[str]) -> list[Signal]:
                 isinstance(n, ast.AnnAssign)
                 and isinstance(n.target, ast.Name)
                 and n.value is not None
-                and _is_literal(n.value)
+                and _repeats_literal(n.annotation, n.value)
             ):
                 # The source line, not ast.unparse: unparse recurses and a deep annotation such
                 # as ``x: a.a.a...`` raises RecursionError on a perfectly valid file.

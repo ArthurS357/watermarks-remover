@@ -361,11 +361,29 @@ def test_obvious_comment_looks_past_blank_and_comment_lines():
     assert "obvious_comment" in names(source)
 
 
-def test_trivial_local_covers_empty_containers_but_not_calls():
-    empty = "def f():\n    a: dict = {}\n    b: list = []\n    c: tuple = ()\n    return a, b, c\n"
-    assert worst(empty, "type_hint_on_trivial_local") == "medium"
-    filled = "def f():\n    a: dict = {'k': 1}\n    b: list = [1]\n    return a, b\n"
-    assert "type_hint_on_trivial_local" not in names(filled)
+@pytest.mark.parametrize(
+    "line",
+    [
+        "a: list[str] = []",  # mypy: Need type annotation; the annotation is what types it
+        "b: dict[str, int] = {}",
+        "c: tuple[int, ...] = ()",
+        "d: str | None = None",  # the annotation declares the Optional
+        "e: dict | None = None",
+        "f: float = 0",  # int literal, float annotation: it says something the value does not
+        "g: list = [1]",
+        "h: int = compute()",
+        "i: a.B = 1",
+    ],
+)
+def test_an_annotation_the_value_does_not_already_say_is_not_trivial(line):
+    assert "type_hint_on_trivial_local" not in names(f"def f():\n    {line}\n    return 1\n")
+
+
+@pytest.mark.parametrize(
+    "line", ['a: str = ""', "b: int = 0", "c: float = 0.0", "d: bool = False", 'e: bytes = b""']
+)
+def test_an_annotation_that_repeats_a_scalar_literal_is_trivial(line):
+    assert "type_hint_on_trivial_local" in names(f"def f():\n    {line}\n    return 1\n")
 
 
 def test_unsupported_language_is_rejected():
@@ -438,7 +456,9 @@ def test_quadratic_regexes_stay_linear(language, blob, engine):
 
 
 def test_deep_annotation_on_a_valid_file_does_not_raise():
-    source = "def f():\n    x: a" + ".a" * 600 + " = 1\n"  # ast.unparse recursed on this
+    # ast.unparse recursed on this. The signal it was written for no longer fires (an attribute
+    # annotation says more than the literal), so a trivial local beside it keeps a snippet to check.
+    source = "def f():\n    x: a" + ".a" * 600 + " = 1\n    y: int = 0\n"
     analysis = analyze(source)
     assert "type_hint_on_trivial_local" in {s.name for s in analysis.signals}
     assert len(next(s for s in analysis.signals if s.snippet).snippet) <= 100
