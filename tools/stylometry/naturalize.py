@@ -347,7 +347,8 @@ def _bold_lead_in(line: str, ctx: _Ctx) -> str:
         return line
     label, sep = m[2].strip(), m[3]
     rest = line[m.end() :]
-    if not (label[:1].isupper() and (sep or label.endswith(":"))):
+    # the label may start with a masked acronym ("**API:**"): ask the restored text for the capital
+    if not (ctx.restore(label)[:1].isupper() and (sep or label.endswith(":"))):
         return line  # not what the detector counts
     if rest[:1].strip():  # "**Termo**-x": no gap after the separator, not a lead-in
         return line

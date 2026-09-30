@@ -341,6 +341,11 @@ def test_nothing_fired_means_nothing_was_masked():
         ("  * **Termo:** x", "  * Termo: x"),
         ("1. **Termo** — x", "1. Termo: x"),
         ("2) **Termo** — `c` e mais", "2) Termo: `c` e mais"),
+        ("**API** — x", "API: x"),  # a masked acronym still counts as a capital
+        (
+            "**RED no código antigo, pelo motivo certo:** x",
+            "RED no código antigo, pelo motivo certo: x",
+        ),
         ("**Termo.** — x", "**Termo.** — x"),  # ends in a stop: not a lead-in
         ("**termo** — x", "**termo** — x"),  # lowercase label: the detector skips it
         ("Texto **Termo** — x", "Texto **Termo** — x"),  # not at the start of the line
