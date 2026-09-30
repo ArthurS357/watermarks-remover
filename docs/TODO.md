@@ -1,5 +1,141 @@
 # TODO — watermarks-remover
 
+## Rodada R11 — 2026-09-30 — Naturalização e integração via skill
+
+Duas entregas. **Eixo A:** `tools/naturalize.py`, um humanizador determinístico que ataca os
+sinais dominantes da R10 e **reduz** o score medido pelo mesmo `text.analyze` que o
+`measure_skill_effectiveness` usa. **Eixo B:** as skills `naturalize` e `detect-ai-patterns`, cujo
+corpo também é a documentação que uma sessão futura lê para explicar a ferramenta. Não toca
+`service/scripts/server.py` nem o comportamento de skills existentes. Nenhum `git push`.
+
+### Baseline (FASE 0, HEAD `fb03416`)
+
+| Medida | Valor | Esperado |
+|---|---|---|
+| `pytest` (`.venv` sem `formats`) | 1262 coletados / **1192 passed / 70 skipped**, 0 falhas, exit 0 | bate |
+| `ruff check .` / `ruff format --check .` | limpos, 117 arquivos | bate |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades | bate |
+
+Nada diverge, a rodada segue.
+
+### Achados da FASE 0 que mudam premissas do prompt
+
+| # | Achado | Consequência no plano |
+|---|---|---|
+| B1 | `.gitignore` é deny-by-default. `git check-ignore skills/naturalize/SKILL.md` retorna 0: a skill nova **nasceria ignorada**. `tools/` e `tests/` já estão liberados | Bloco 3 libera `!/skills/naturalize/**` e `!/skills/detect-ai-patterns/**`, e o teste-guarda da R10 passa a cobrir `skills/` |
+| B2 | `install_skill.py` instala **uma** skill fixa (`clean-user-facing-text`) em `~/.cursor/skills`. Não alcança `~/.claude/skills` nem as skills novas | R11-07 pede o script do repo, então ele ganha `--skill NOME` (default inalterado). Alvo do Claude Code: `--cursor-home ~/.claude`. Bloco próprio, antes das skills. `test_lightweight_skill.py` cobre o default |
+| B3 | A cópia instalada de `clean-user-facing-text` em `~/.claude/skills` está **defasada** do repo: `scripts/` é anterior (22/08 e 07/09 contra 16 e 21/09; o repo tem `strip_em_dash`, braille, `TextCleanOptions`). O `SKILL.md` é idêntico | Reinstalar com `--force` mudaria os scripts de uma skill existente, o que a rodada proíbe. **Só as duas skills novas são sincronizadas.** A seção nova de R11-06 fica na cópia do repo até o usuário decidir reinstalar. Registro como risco residual |
+| B4 | `docs/DONE.md` hoje pontua **0.392**: `bold_lead_in` 23 (high), `comparison_table_symmetry` (medium), `template_heading` 1 (low, `### O que saiu`). **Nenhum sinal de travessão dispara.** A medição da R10 (+0.0132) foi sobre uma versão anterior do arquivo | O ganho do dogfooding vem de `bold_lead_in` e `template_heading`, não do travessão. Se o delta não chegar a −0.10, a causa provável é a tabela (`comparison_table_symmetry`, fora de escopo) |
+| B5 | `WATERMARKS_REPO` não existe em lugar nenhum do repo. O padrão do `.cmd` é: variável `REPO` com caminho fixo, checa se o arquivo existe, erra com mensagem que manda ajustar a variável | As skills definem o padrão: `$env:WATERMARKS_REPO`, senão `E:\Projetos\Scripts\watermarks-remover`, senão erro explícito |
+| B6 | O prompt lista `.html .docx .pdf` no `description` da skill `naturalize`. O motor não consegue reescrever DOCX/PDF/HTML de volta de forma determinística | O CLI aceita `.md .markdown .txt` e sai com 2 nos outros. O `description` diz só isso, sem prometer o que a ferramenta não faz |
+| B7 | O prompt manda `pode ser que talvez X` → `X`. Isso troca uma afirmação hedgeada por uma categórica, o que é mudança semântica | `hedge_double` mantém **um** hedge: `pode ser que talvez X` → `talvez X`. É o que o `ADVICE` do `measure` já recomenda |
+| B8 | O prompt manda `template_heading` → "equivalente genérico em português". Num documento em inglês isso cria um título em português | Dicionário de títulos de template conhecidos, com saída **no idioma do título** (PT→PT, EN→EN). Decisão registrada, fácil de inverter |
+
+### Plano
+
+| ID | Item | Arquivos | Bloco de commit |
+|---|---|---|---|
+| R11-01 | Motor: máscara de trechos protegidos, 8 transformações, laço até ponto fixo | `tools/stylometry/naturalize.py`, `tests/test_naturalize.py` | 1 |
+| R11-03 | Fixtures: um par positivo por sinal, um adversarial, um de preservação | `tests/fixtures/stylometry/naturalize/<caso>/{before,after}.md` | 1 |
+| R11-02 | CLI `tools/naturalize.py`: `--format`, `--diff-only`, `--in-place`, `--signals`, `--preserve`, `--output` | `tools/naturalize.py`, `tests/test_naturalize_cli.py` | 2 |
+| R11-07a | `install_skill.py --skill NOME` | `install_skill.py`, `tests/test_lightweight_skill.py` | 3 |
+| R11-04 | Skill `naturalize` + `.gitignore` + guarda | `skills/naturalize/SKILL.md`, `.gitignore`, `tests/test_naturalize_skills.py` | 4 |
+| R11-05 | Skill `detect-ai-patterns` | `skills/detect-ai-patterns/SKILL.md`, `.gitignore` | 5 |
+| R11-06 | Seção nova em `clean-user-facing-text` (só acrescenta) | `skills/clean-user-facing-text/SKILL.md` | 6 |
+| R11-08 | README, seção "Detecção estilométrica" | `README.md` | 7 |
+| R11-07b | Sincronizar as 2 skills novas para `~/.claude/skills` (operacional, fora do git) | — | — |
+| R11-09 | Dogfooding e registro | `docs/DONE.md`, `docs/TODO.md` | 8 |
+
+**Ordem de commit:** plano (`docs(todo)`) → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8. O prompt lista 7 blocos;
+o 3 (`install_skill.py`) é extra porque a sincronização não funciona sem ele. TDD dentro de cada
+bloco: teste vermelho, implementação, verde, `ruff`, suíte completa.
+
+### Desenho do motor (R11-01)
+
+- **Sem ML, sem rede.** Regex sobre texto mascarado. O motor reusa `text.analyze` para medir.
+- **Máscara.** Antes de transformar, cada trecho protegido vira um marcador opaco (caracteres de
+  uso privado que não aparecem no texto) e é restaurado no fim. Linha inteira protegida: bloco de
+  código (``` e ~~~), front matter, linha de tabela (`|`), citação em bloco (`>`), linha que casa com
+  `--preserve`. Trecho protegido dentro da linha: código inline, destino de link, URL, e-mail,
+  path (Windows, POSIX, relativo com extensão), citação entre aspas duplas (`"..."`, `“...”`,
+  `«...»`), tag HTML, hash hexadecimal (7–40, com dígito e letra), identificador (`snake_case`,
+  `CamelCase`, `UPPER_CASE`). **Números não são mascarados**: nenhuma transformação toca dígitos, e
+  o travessão sem espaço entre dígitos (`10—20`) é intervalo e fica.
+- **Transformações** (chave = nome do sinal, que é o que `--signals` aceita):
+
+| Sinal | O que faz | Só se |
+|---|---|---|
+| `bold_lead_in` | `**Termo** — x`, `**Termo**: x`, `**Termo:** x` → `Termo: x` | linha que o detector conta (rótulo com maiúscula, no início de linha ou item de lista) |
+| `em_dash_density` | `—` com texto dos dois lados → `,` | em prosa e lista. Não em título, tabela, citação, código. O gate é `em_dash_density` **ou** `em_dash_to_comma_ratio` |
+| `template_heading` | título de template conhecido → genérico, no mesmo idioma | título no dicionário e sem âncora `#slug` apontando para ele no mesmo arquivo |
+| `emoji_heading` | tira emoji (e `U+FE0F`/`U+200D`) do título | título não fica vazio e sem âncora apontando |
+| `hedge_double` | `H1 H2 X` → `H2 X` | hedges separados só por espaço |
+| `delve_family` | `delve/dive (deeper) into X` → `look at X`, com flexão | verbo principal com `into` |
+| `worth_noting` | tira `é importante notar que`, `vale notar que`, `it's worth noting that` e variantes | começo de frase ou depois de vírgula, sem negação antes. Capitaliza a oração só se o lead-in abria a frase |
+| `fast_paced_world` | apaga `In today's fast-paced world, `, `No mundo de hoje, ` | começo de frase, frase de abertura conhecida seguida de vírgula |
+
+- **Gate por sinal.** Uma transformação só roda se o detector da R10 dispara o sinal dela no texto
+  **atual**. Sinal que o detector não vê não é tocado.
+- **Ponto fixo.** O motor repete (gate + transformações) até o texto parar de mudar, com teto de 5
+  passadas. Rodar o CLI sobre a própria saída refaz a última passada com o mesmo texto e o mesmo
+  gate, então não muda nada: idempotente por construção, e o teste confere 2× = 1×.
+- **Fim de linha e BOM preservados.** O texto é cortado por linha mantendo o separador de cada uma
+  (`\r\n`, `\n`, `\r`). Nenhuma transformação junta linhas.
+- **Fora do escopo, por decisão:** `sentence_uniformity`, `paragraph_uniformity`, `type_token_ratio`
+  (reescrever frase é semântico), `comparison_table_symmetry` (tabela é dado), todos os sinais de
+  código, `delve`/`mergulhar` em português, `dive in` sem objeto, `hedge_double` quebrado por
+  quebra de linha, `tricolon_uniform`, `not_just_but`, `meta_commentary`, `here_is_why`,
+  `declarative_close`, `on_the_other_hand_cascade`.
+
+### CLI (R11-02)
+
+`tools/naturalize.py <path> [--format text|md|json] [--diff-only | --in-place] [--signals CSV]
+[--preserve GLOB]... [--output FILE]`. Um arquivo por chamada (`.md .markdown .txt`).
+
+- `--format text` (padrão): o texto naturalizado no stdout; com `--diff-only`, o diff unificado.
+  `md`: relatório legível. `json`: o objeto do contrato mais `score_before`, `score_after` e `diff`.
+- `--preserve GLOB` (repetível): o glob é testado contra o **caminho do arquivo** (casou: o
+  arquivo não é tocado) e contra **cada linha** (casou: a linha fica como está).
+- `--in-place` escreve por arquivo temporário e `os.replace`. Não escreve se nada mudou.
+- **Exit:** 0 sucesso; 1 caminho inexistente, não é arquivo, ou erro de escrita; 2 formato não
+  suportado (extensão, não UTF-8, maior que 1 MB) e erro de uso do argparse; 3 nenhuma
+  transformação aplicável. No 3 a saída sai igual (texto intacto, diff vazio, `transforms: []`).
+- Reusa `DISCLAIMER`, `utf8_streams`, `quote` e o padrão de `--output` dos dois CLIs da R10.
+
+### Riscos por item
+
+- **R11-01:** a máscara mascara de menos (um trecho sensível escapa) ou de mais (a transformação
+  nunca dispara). O primeiro é semântico e o mais grave: um teste por categoria, cada um com o
+  trecho colado a um gatilho que um motor ingênuo alteraria. Âncora: título reescrito quebra um
+  link `#slug` de **outro** arquivo, que não dá para checar. Por isso `--diff-only` vem primeiro no
+  fluxo das skills. Travessão vira vírgula também onde a frase pede ponto (emenda por vírgula):
+  legível, não agramatical, e fica no disclaimer. ReDoS: padrões ancorados e limitados, com teste
+  de tempo em entrada de 1 MB.
+- **R11-02:** `--in-place` perder CRLF/BOM ou deixar arquivo pela metade (escrita atômica e teste
+  de bytes). Colisão do exit 2 entre "formato" e "uso do argparse", herdada dos dois CLIs.
+- **R11-07a:** mudar o `install_skill.py` sem quebrar o default (Cursor, uma skill). O teste
+  existente continua valendo, e ganha um para `--skill`.
+- **R11-04/05:** a skill afirmar mais do que a ferramenta faz (B6), ou o caminho do CLI quebrar
+  fora do repo. Verifico rodando o comando documentado de `C:\` com e sem `WATERMARKS_REPO`.
+- **R11-06:** mexer no comportamento da skill existente. Só se acrescenta uma seção no fim; o diff
+  não pode ter linha removida.
+- **R11-08:** o exemplo de saída no README tem que vir de execução real, não escrito à mão.
+- **R11-09:** o delta não chegar a −0.10 (B4). Se ficar entre −0.10 e 0, registro "marginal"; se
+  passar de 0, não fecho e investigo. A cópia vai para o scratchpad, nunca para o git.
+
+### Critério de sucesso por item
+
+| ID | Critério |
+|---|---|
+| R11-01 | 8 transformações; nas fixtures positivas o sinal alvo **some**; adversarial idêntico byte a byte; 2× = 1×; uma categoria de preservação por teste; cobertura de ramo 100% no módulo |
+| R11-02 | Os 4 exit codes; `--diff-only` não escreve; `--in-place` preserva CRLF e BOM; JSON com todos os campos do contrato; cobertura ≥ 99% |
+| R11-03 | Par `before.md`/`after.md` por caso, e `after.md` é exatamente a saída do motor |
+| R11-04/05 | `name` = pasta, `description` ≤ 1024, gatilhos em terceira pessoa; comando documentado roda de outro `cwd` |
+| R11-06 | Diff só com linhas adicionadas |
+| R11-07 | `ls ~/.claude/skills/` mostra `naturalize` e `detect-ai-patterns`; cópia feita pelo `install_skill.py` |
+| R11-08 | Seção atualizada, exemplo vindo de execução real |
+| R11-09 | **delta ≤ −0.10** (efetividade medium ou high). Entre −0.10 e 0, marginal. Acima de 0, não fecha |
+
 ## Rodada R10 — 2026-09-30 — Detecção estilométrica e medição de efetividade
 
 Concluída em 2026-09-30. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-09-30). O plano
