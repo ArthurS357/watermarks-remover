@@ -793,6 +793,106 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$(pwd):/data" \
 The image installs a CPU torch; CUDA users should run `setup_markdiffusion.sh`
 on the host instead. Model downloads still hit the HF hub on first run.
 
+## Detecção estilométrica
+
+Dois scripts isolados em `tools/` (não tocam o serviço HTTP nem as skills) apontam hábitos de
+estilo no texto e no código que **você** escreveu: travessões em excesso, títulos de modelo,
+comentários óbvios e assim por diante, para você reescrever. Não dizem quem escreveu nada. A saída
+traz `signals`, um `score` de 0.0 a 1.0, `confidence` (`low`, `medium`, `high`) e o `disclaimer`.
+É determinístico: regex, `ast` e contagens, sem modelo e sem rede.
+
+> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em
+> código com convenções fortes. Uso pessoal — não use para acusar terceiros.
+
+```bash
+python tools/detect_ai_patterns.py CAMINHO [--format json|md] [--only text|code|all] \
+    [--min-severity low|medium|high] [--ignore GLOB] [--exclude-tests] [--output ARQUIVO]
+python tools/measure_skill_effectiveness.py ANTES DEPOIS [--format json|md] \
+    [--signals sinal1,sinal2] [--output ARQUIVO]
+```
+
+- **Formatos.** Texto: `.md .txt .html .docx .pdf`. Código: `.py .ts .tsx .js .jsx`.
+- **Grupo opcional `formats`.** `.docx`, `.pdf` e o tree-sitter (TS/JS) precisam dele. Sem o
+  grupo, `.docx`/`.pdf` são pulados com um aviso e TS/JS são analisados por regex, com
+  `confidence` no máximo `low`. Instale sem mexer no resto do ambiente:
+
+  ```bash
+  uv pip install --group formats      # ou: pip install --group formats
+  uv sync --inexact --group formats
+  ```
+
+  `uv sync --group formats` **sem** `--inexact` é uma sincronização exata: remove da venv tudo o
+  que não está no grupo, pytest e ruff inclusos. PDF criptografado com AES também precisa do
+  pacote `cryptography`, que o grupo não traz.
+- **Score.** Soma ponderada dos sinais que dispararam (estrutural 2, lexical 1, métrica 0,5;
+  severidade `low`/`medium`/`high` vale 0,33/0,66/1), saturada por `1 − e^(−soma/8)`. Não é
+  probabilidade. `--min-severity` esconde sinais do relatório, mas o score usa todos.
+- **Confidence.** Vem do tamanho da amostra (texto: menos de 150 palavras `low`, menos de 600
+  `medium`; código: menos de 40 linhas `low`, menos de 200 `medium`). Regex no lugar do
+  tree-sitter limita a `low`, e PDF a `medium`.
+- **O que é varrido.** Ficam de fora `.git`, `.venv`, `node_modules`, `__pycache__` e caches. Links
+  simbólicos e junctions do Windows nunca são seguidos. Texto acima de 1 MB e binário acima de
+  25 MB são pulados com o motivo. `.docx`, `.pdf` e o tree-sitter rodam em um processo filho com
+  timeout, e entrada corrompida vira "pulado", não erro.
+- **Saída.** Exit 0 rodou; 1 caminho inexistente ou `--output` inválido; 2 nada foi analisado.
+  Com diretórios, o `measure_skill_effectiveness.py` pareia os arquivos pelo caminho relativo.
+  `delta = depois − antes` (negativo é melhora): abaixo de −0,30 a efetividade é `high`, de −0,30
+  até −0,10 (exclusive) é `medium`, o resto é `low`. A `recomendação` nomeia o pior sinal que
+  sobrou e o que fazer com ele.
+
+Exemplo real, `python tools/detect_ai_patterns.py tests/fixtures/stylometry/text_ai_like.md
+--format md --min-severity high` (a fixture de teste é de propósito carregada de sinais):
+
+```text
+# Relatório estilométrico
+
+> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em código com convenções fortes. Uso pessoal — não use para acusar terceiros.
+
+- Arquivos analisados: 1 (markdown 1)
+- Só sinais de severidade high ou mais; o score usa todos
+
+## Sinais mais frequentes
+
+| Sinal | Arquivos | Severidade máxima |
+|---|---|---|
+| `em_dash_to_comma_ratio` | 1 | high |
+| `paragraph_uniformity` | 1 | high |
+| `template_heading` | 1 | high |
+
+## Top 10 arquivos por score
+
+### 1. `text_ai_like.md`
+
+Score 0.89 · confiança medium · markdown
+
+- `template_heading` (high, valor 3): linha 3: `## 🚀 Por que isso importa`; linha 13: `## O que é o limpa.py`; linha 33: `## Por que confiar no resultado`
+- `em_dash_to_comma_ratio` (high, valor 0.688): documento: `11 em-dash para 16 vírgulas`
+- `paragraph_uniformity` (high, valor 0): documento: `8 parágrafos, desvio de 0.00 frases`
+```
+
+E a medição de uma reescrita, `python tools/measure_skill_effectiveness.py
+tests/fixtures/stylometry/text_ai_like.md tests/fixtures/stylometry/text_human_like.md --format md
+--signals template_heading,em_dash_to_comma_ratio,paragraph_uniformity`:
+
+```text
+# Medição de efetividade
+
+> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em código com convenções fortes. Uso pessoal — não use para acusar terceiros.
+
+- Score: 0.43 → 0.00 (delta -0.43)
+- Efetividade: **high** · confiança medium
+- Só estes sinais: `em_dash_to_comma_ratio`, `paragraph_uniformity`, `template_heading`
+- Eliminados (3): `em_dash_to_comma_ratio`, `paragraph_uniformity`, `template_heading`
+- Restantes (0): nenhum
+- Introduzidos (0): nenhum
+
+**Recomendação:** Nenhum sinal restante.
+```
+
+Os limiares e pesos são uma escolha desta ferramenta, sem calibração contra um corpus. Este
+repositório pontua alto contra si mesmo nos próprios documentos (negrito de abertura, tabelas):
+leia como sugestão de revisão, nunca como medida de autoria.
+
 ## Coverage matrix
 
 | Channel | Claude | Gemini/SynthID | OpenAI | Open-LLM |
