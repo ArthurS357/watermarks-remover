@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import codecs
+import difflib
 import json
 import os
+import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -393,3 +396,107 @@ def test_running_the_output_again_changes_nothing(tmp_path, capsys):
     assert run(capsys, source, "--output", once)[0] == 0
     code, out, _ = run(capsys, once)
     assert (code, out) == (3, once.read_bytes().decode())
+
+
+# --- found by the review of R11 ----------------------------------------------------------------
+
+
+def test_the_diff_is_linear_where_difflib_took_minutes(tmp_path):
+    before = "\n".join(f"linha {i} — x" if i % 2 else f"linha {i}" for i in range(60_000))
+    after = "\n".join(f"linha {i}, x" if i % 2 else f"linha {i}" for i in range(60_000))
+    start = time.perf_counter()
+    diff = cli.unified_diff(before, after, "big.md")
+    assert time.perf_counter() - start < 5
+    assert diff.count("\n-") == 30_000
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_the_diff_agrees_with_difflib_when_no_line_repeats(seed):
+    rng = random.Random(seed)  # noqa: S311 - seeded test data, not security
+    old = [f"linha {i}" for i in range(rng.randint(1, 40))]
+    new = [f"{line} mudou" if rng.random() < 0.25 else line for line in old]
+    expected = "".join(
+        line + "\n"
+        for line in difflib.unified_diff(old, new, "f.md", "f.md (naturalizado)", lineterm="")
+    )
+    assert cli.unified_diff("\n".join(old), "\n".join(new), "f.md") == expected
+
+
+def test_an_unchanged_text_has_an_empty_diff_and_hunks_merge_when_context_meets():
+    assert cli.unified_diff("a\nb", "a\nb", "f.md") == ""
+    body = "\n".join(str(i) for i in range(30))
+    changed = body.replace("\n5\n", "\nX\n").replace("\n9\n", "\nY\n").replace("\n25\n", "\nZ\n")
+    hunks = [
+        line for line in cli.unified_diff(body, changed, "f.md").splitlines() if line[0] == "@"
+    ]
+    assert hunks == ["@@ -3,11 +3,11 @@", "@@ -23,7 +23,7 @@"]  # 5 and 9 share context; 25 is apart
+
+
+def test_the_default_modes_do_not_pay_for_a_diff(tmp_path, capsys, monkeypatch):
+    def boom(*args):
+        raise AssertionError("the diff was built")
+
+    monkeypatch.setattr(cli, "unified_diff", boom)
+    source = put(tmp_path, "doc.md", "Vale notar que sim.\n")
+    assert run(capsys, source)[:2] == (0, "Sim.\n")
+    assert run(capsys, source, "--in-place")[0] == 0
+
+
+def test_bidi_overrides_and_escapes_never_reach_a_report_or_a_diff(tmp_path, capsys):
+    evil = f"Vale notar que {chr(0x202E)}sim{chr(0x1B)}[31m.\n"
+    source = put(tmp_path, "doc.md", evil)
+    for fmt_args in (["--diff-only"], ["--format", "md"], ["--format", "json"]):
+        out = run(capsys, source, *fmt_args)[1]
+        assert chr(0x202E) not in out and chr(0x1B) not in out
+
+
+def test_text_sent_to_a_terminal_is_sanitised_but_a_pipe_gets_the_bytes(
+    tmp_path, capsys, monkeypatch
+):
+    source = put(tmp_path, "doc.md", f"Vale notar que a {chr(0x1B)}]0;x{chr(7)}b{chr(0x202E)}c.\n")
+    piped = run(capsys, source)[1]
+    assert chr(0x1B) in piped and chr(0x202E) in piped  # a file is a file
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    shown = run(capsys, source)[1]
+    assert chr(0x1B) not in shown and chr(7) not in shown and chr(0x202E) not in shown
+    assert shown.endswith("\n")  # the line break survives
+
+
+def test_output_cannot_be_a_hard_link_to_the_input(tmp_path, capsys):
+    source = put(tmp_path, "src.md", "Vale notar que sim.\n")
+    link = tmp_path / "link.json"
+    try:
+        os.link(source, link)
+    except OSError:
+        pytest.skip("hard links are not available here")
+    code, _, err = run(capsys, source, "--format", "json", "--output", link)
+    assert (code, "próprio arquivo" in err) == (1, True)
+    assert source.read_bytes() == b"Vale notar que sim.\n"
+
+
+def test_output_replaces_the_file_instead_of_writing_through_a_hard_link(tmp_path, capsys):
+    source = put(tmp_path, "src.md", "Vale notar que sim.\n")
+    target = put(tmp_path, "out.md", "old\n")
+    other = tmp_path / "other.md"
+    try:
+        os.link(target, other)
+    except OSError:
+        pytest.skip("hard links are not available here")
+    assert run(capsys, source, "--output", target)[0] == 0
+    assert target.read_bytes() == b"Sim.\n"
+    assert other.read_bytes() == b"old\n"  # the other name still has the old content
+
+
+def test_a_file_edited_after_it_was_read_is_not_overwritten(tmp_path, capsys, monkeypatch):
+    source = put(tmp_path, "doc.md", "Vale notar que sim.\n")
+    real = cli.engine.naturalize
+
+    def edit_then_naturalize(*args, **kwargs):
+        source.write_bytes(b"edited meanwhile, and longer\n")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cli.engine, "naturalize", edit_then_naturalize)
+    code, _, err = run(capsys, source, "--in-place")
+    assert (code, "mudou depois de lido" in err) == (1, True)
+    assert source.read_bytes() == b"edited meanwhile, and longer\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["doc.md"]

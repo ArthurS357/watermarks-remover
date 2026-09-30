@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import codecs
-import difflib
 import fnmatch
 import json
 import os
@@ -32,7 +31,6 @@ import re
 import shutil
 import sys
 import tempfile
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +64,7 @@ class Source:
     path: Path
     text: str
     bom: bool
+    stamp: tuple[int, int]  # (mtime_ns, size) when it was read: a write refuses a file that moved
 
     def encode(self, text: str) -> bytes:
         return (codecs.BOM_UTF8 if self.bom else b"") + text.encode("utf-8")
@@ -79,6 +78,7 @@ def read_source(path: Path) -> Source | str:
     try:
         with path.open("rb") as handle:  # the real cap: the size can change after stat()
             data = handle.read(loaders.MAX_TEXT_BYTES + 1)
+            stat = os.fstat(handle.fileno())
     except OSError as exc:
         return f"erro de leitura: {exc.strerror or type(exc).__name__}"
     if len(data) > loaders.MAX_TEXT_BYTES:
@@ -90,27 +90,64 @@ def read_source(path: Path) -> Source | str:
         return "o arquivo não é UTF-8 válido"
     if "\x00" in text:
         return "conteúdo binário"
-    return Source(path, text, bom)
+    return Source(path, text, bom, (stat.st_mtime_ns, stat.st_size))
 
 
 # --- reports -----------------------------------------------------------------------------------
 
 
-def unified_diff(before: str, after: str, name: str) -> str:
-    """A unified diff for a human: control characters other than tab become ``?``, so a file
-    carrying an escape sequence cannot drive the terminal."""
-    lines = difflib.unified_diff(
-        split_lines(before),
-        split_lines(after),
-        fromfile=name,
-        tofile=f"{name} (naturalizado)",
-        lineterm="",
+# Control characters (C0, DEL, C1) and the bidi overrides/isolates become "?": a file carrying an
+# escape sequence or a U+202E must not drive the terminal or flip a report. Tab stays.
+_UNSAFE = {
+    c: "?"
+    for c in (
+        *range(0x20),
+        0x7F,
+        *range(0x80, 0xA0),
+        *range(0x202A, 0x202F),
+        *range(0x2066, 0x206A),
     )
-    safe = [
-        "".join("?" if unicodedata.category(c) == "Cc" and c != "\t" else c for c in line)
-        for line in lines
-    ]
-    return "\n".join(safe) + "\n" if safe else ""
+    if c != 0x09
+}
+_TERMINAL_UNSAFE = {c: r for c, r in _UNSAFE.items() if c not in (0x0A, 0x0D)}
+CONTEXT_LINES = 3
+
+
+def _safe(text: str) -> str:
+    return text.translate(_UNSAFE)
+
+
+def _span(start: int, length: int) -> str:
+    return str(start) if length == 1 else f"{start},{length}"
+
+
+def unified_diff(before: str, after: str, name: str) -> str:
+    """A unified diff for a human. The engine never adds or removes a line, so the two texts are
+    compared by line number: ``difflib`` is quadratic and took minutes on a 600 kB file."""
+    old, new = split_lines(before), split_lines(after)
+    changed = [i for i, (a, b) in enumerate(zip(old, new, strict=True)) if a != b]
+    hunks: list[list[int]] = []  # [first, end) line ranges, changes merged when their context meets
+    for i in changed:
+        lo, hi = max(0, i - CONTEXT_LINES), min(len(old), i + CONTEXT_LINES + 1)
+        if hunks and lo <= hunks[-1][1]:
+            hunks[-1][1] = hi
+        else:
+            hunks.append([lo, hi])
+    out = [f"--- {name}", f"+++ {name} (naturalizado)"] if hunks else []
+    for lo, hi in hunks:
+        out.append(f"@@ -{_span(lo + 1, hi - lo)} +{_span(lo + 1, hi - lo)} @@")
+        i = lo
+        while i < hi:
+            run = i
+            while run < hi and old[run] != new[run]:
+                run += 1
+            if run == i:
+                out.append(" " + old[i])
+                i += 1
+            else:
+                out += ["-" + line for line in old[i:run]] + ["+" + line for line in new[i:run]]
+                i = run
+    return "".join(_safe(line) + "\n" for line in out)
 
 
 def _ranked(analysis: Analysis) -> list[str]:
@@ -139,7 +176,12 @@ def build_report(
     for edit in result.transforms[:MAX_EDITS]:
         old, new = _changed(edit.before, edit.after)
         edits.append(
-            {"signal": edit.signal, "line": edit.line, "before": clean(old), "after": clean(new)}
+            {
+                "signal": edit.signal,
+                "line": edit.line,
+                "before": _safe(clean(old)),
+                "after": _safe(clean(new)),
+            }
         )
     spans = [{"kind": s.kind, "line": s.line, "text": s.text} for s in result.preserved[:MAX_SPANS]]
     confidence = min(result.before.confidence, result.after.confidence, key=CONFIDENCES.index)
@@ -254,13 +296,25 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def write_atomically(path: Path, data: bytes) -> None:
-    """Replace ``path`` with ``data`` in one step, keeping its permissions."""
+def _stamp(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_size
+
+
+def write_atomically(path: Path, data: bytes, stamp: tuple[int, int] | None = None) -> None:
+    """Replace ``path`` with ``data`` in one step, keeping its permissions. With ``stamp`` (what
+    the file looked like when it was read) it refuses a file that changed since, so an edit made
+    meanwhile is not silently lost. The temp file is flushed to disk first."""
     handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(handle, "wb") as tmp:
             tmp.write(data)
-        shutil.copymode(path, name)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        if path.exists():
+            shutil.copymode(path, name)
+        if stamp is not None and _stamp(path) != stamp:
+            raise OSError(0, "o arquivo mudou depois de lido")
         os.replace(name, path)
     except BaseException:
         Path(name).unlink(missing_ok=True)
@@ -293,9 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(source, str):
         print(f"erro: {printable(source)}", file=sys.stderr)
         return 2
-    output = Path(args.output).resolve() if args.output else None
-    if output is not None and output == path.resolve():
-        print("erro: --output aponta para o próprio arquivo", file=sys.stderr)
+    output = Path(args.output) if args.output else None
+    if output is not None and output.exists() and os.path.samefile(output, path):
+        print("erro: --output aponta para o próprio arquivo", file=sys.stderr)  # also a hard link
         return 1
     notes: list[str] = []
     skip = any(
@@ -311,16 +365,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"erro: {exc}", file=sys.stderr)
         return 2
     mode = "diff-only" if args.diff_only else "in-place" if args.in_place else "stdout"
-    report = build_report(source, result, mode, notes)
+    wants_report = args.format != "text" or args.diff_only  # the diff is the costly part
+    report = build_report(source, result, mode, notes) if wants_report else {}
     data = _payload(args, source, result, report)
     try:
         if args.in_place and result.changed:
-            write_atomically(path.resolve(), source.encode(result.text))
+            write_atomically(path.resolve(), source.encode(result.text), source.stamp)
             print(f"escrito em {path} ({len(result.transforms)} transformações)", file=sys.stderr)
         if output is not None:
-            output.write_bytes(data)
+            write_atomically(output, data)
             print(f"resultado escrito em {output}", file=sys.stderr)
         elif not (args.in_place and args.format == "text"):
+            if sys.stdout.isatty():
+                data = data.decode("utf-8").translate(_TERMINAL_UNSAFE).encode("utf-8")
             sys.stdout.flush()
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
