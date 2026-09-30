@@ -18,6 +18,10 @@
 /skills/*
 !/skills/clean-user-facing-text/
 !/skills/clean-user-facing-text/**
+!/skills/detect-ai-patterns/
+!/skills/detect-ai-patterns/**
+!/skills/naturalize/
+!/skills/naturalize/**
 !/skills/remove-ai-marks/
 !/skills/remove-ai-marks/**
 !/tests/
