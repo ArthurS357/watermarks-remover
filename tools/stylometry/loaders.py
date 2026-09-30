@@ -14,9 +14,11 @@ from __future__ import annotations
 import codecs
 import functools
 import importlib
+import lzma
 import re
 import tomllib
 import zipfile
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -252,6 +254,8 @@ def _zip_refusal(path: Path) -> str | None:
                             return f"docx descomprime para mais de {MAX_UNCOMPRESSED} bytes"
     except (zipfile.BadZipFile, NotImplementedError, RuntimeError) as exc:
         return f"docx ilegível ({type(exc).__name__})"
+    except (EOFError, zlib.error, lzma.LZMAError):  # a member's compressed data is damaged
+        return "docx ilegível (dados comprimidos corrompidos)"
     return None
 
 

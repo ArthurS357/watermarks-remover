@@ -17,7 +17,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "stylometry"
 sys.path.insert(0, str(TOOLS))
 
 import detect_ai_patterns as cli
-from stylometry import DISCLAIMER, SEVERITIES, isolate, loaders
+from stylometry import DISCLAIMER, SEVERITIES, isolate, loaders, printable
 from stylometry_support import in_process
 
 AI_TEXT = (FIXTURES / "text_ai_like.md").read_text(encoding="utf-8")
@@ -187,6 +187,75 @@ def test_symlinks_are_never_followed(tmp_path, capsys):
         pytest.skip("symlinks need a privilege this environment does not grant")
     _, report, _ = run_json(capsys, tmp_path)
     assert list(report["scores"]) == ["real.md"]
+
+
+def test_ntfs_junctions_are_never_followed(tmp_path, capsys):
+    # os.walk(followlinks=False) still descends into a junction: islink() is False for one
+    if sys.platform != "win32":
+        pytest.skip("junctions are an NTFS thing")
+    put(tmp_path, "tree/a.md", AI_TEXT)
+    put(tmp_path, "outside/b.md", AI_TEXT)
+    made = subprocess.run(
+        [
+            os.environ["COMSPEC"],
+            *("/c", "mklink", "/J", str(tmp_path / "tree" / "link"), str(tmp_path / "outside")),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert made.returncode == 0, "mklink /J needs no privilege; the environment is broken"
+    _, report, _ = run_json(capsys, tmp_path / "tree")
+    assert list(report["scores"]) == ["a.md"]
+
+
+def test_a_directory_reported_as_a_junction_is_skipped_on_any_platform(
+    tmp_path, capsys, monkeypatch
+):
+    put(tmp_path, "ok/y.md", AI_TEXT)
+    put(tmp_path, "jct/x.md", AI_TEXT)
+    is_junction = os.path.isjunction
+    monkeypatch.setattr(os.path, "isjunction", lambda p: Path(p).name == "jct" or is_junction(p))
+    _, report, _ = run_json(capsys, tmp_path)
+    assert list(report["scores"]) == ["ok/y.md"]
+
+
+# --- names that reach a terminal or a report -----------------------------------------------------
+
+HOSTILE = (
+    "a\x1b[31m`b`\n.md"  # a POSIX file name can carry an escape sequence, a backtick, a newline
+)
+
+
+def test_printable_replaces_control_characters_and_nothing_else():
+    assert printable("a\x1b[2Jb\x07\x9bc\td") == "a?[2Jb??c?d"
+    assert printable("ação — ok.md") == "ação — ok.md"
+
+
+def test_a_hostile_file_name_never_reaches_the_markdown_report_raw():
+    analysis = cli.text_signals.analyze(AI_TEXT)
+    scanned = cli.Scan(
+        files={
+            HOSTILE: cli.FileResult(HOSTILE, "markdown", "text", 0.9, "low", analysis.signals, [])
+        },
+        skipped=[(HOSTILE, "boom\x1b[2J")],
+    )
+    report = cli.render_md(scanned, "low")
+    assert "\x1b" not in report
+    assert "`a?[31m'b'?.md`" in report  # one code span: backticks became quotes, \n became ?
+    assert report.count("`a?[31m'b'?.md`") == 2  # the ranking heading and the skipped list
+
+
+def test_a_hostile_file_name_never_reaches_the_terminal_raw(tmp_path, capsys, monkeypatch):
+    put(tmp_path, "ok.md", AI_TEXT)
+    ghost = tmp_path.resolve() / HOSTILE
+    monkeypatch.setattr(cli, "iter_files", lambda root, options: iter([ghost]))
+    monkeypatch.setattr(
+        loaders, "load", lambda path: loaders.UnsupportedFormat(path, "boom\x1b[2J")
+    )
+    code, _, err = run(capsys, tmp_path)
+    assert code == 2
+    assert "\x1b" not in err
+    assert "a?[31m`b`?.md" in err and "boom?[2J" in err
 
 
 # --- severity filter ---------------------------------------------------------------------------

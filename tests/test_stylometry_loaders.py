@@ -368,6 +368,47 @@ def test_a_zip_directory_that_lies_about_sizes_never_reaches_python_docx(tmp_pat
     assert "docx" in result.reason
 
 
+_MEMBER = "word/document.xml"
+
+
+def damaged_member_zip(path: Path, compression: int, at: int) -> Path:
+    """A valid zip directory whose one member has a damaged compressed stream."""
+    with zipfile.ZipFile(path, "w", compression) as archive:
+        archive.writestr(_MEMBER, bytes(range(256)) * 400)
+    raw = bytearray(path.read_bytes())
+    raw[30 + len(_MEMBER) + at] = 0xFF  # 30-byte local header, then the name, then the stream
+    path.write_bytes(bytes(raw))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("compression", "at"),
+    [(zipfile.ZIP_DEFLATED, 0), (zipfile.ZIP_LZMA, 4)],
+    ids=["zlib.error", "LZMAError"],
+)
+def test_a_damaged_compressed_member_is_refused_not_raised(tmp_path, compression, at):
+    # zlib.error and lzma.LZMAError are not OSError: load() used to let them abort the whole scan
+    path = damaged_member_zip(tmp_path / "a.docx", compression, at)
+    assert loaders._zip_refusal(path) == "docx ilegível (dados comprimidos corrompidos)"
+
+
+def test_a_compressed_stream_that_ends_early_is_refused_not_raised(tmp_path, monkeypatch):
+    def ends_early(self, n=-1):
+        raise EOFError("Compressed file ended before the end-of-stream marker was reached")
+
+    path = damaged_member_zip(tmp_path / "a.docx", zipfile.ZIP_DEFLATED, 0)
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", ends_early)
+    assert loaders._zip_refusal(path) == "docx ilegível (dados comprimidos corrompidos)"
+
+
+def test_load_skips_a_damaged_docx_instead_of_raising(tmp_path, monkeypatch):
+    monkeypatch.setattr(loaders, "_require", lambda module: object())  # pretend python-docx is here
+    worker_raises(monkeypatch, AssertionError("the worker must not see a damaged archive"))
+    result = loaders.load(damaged_member_zip(tmp_path / "a.docx", zipfile.ZIP_DEFLATED, 0))
+    assert isinstance(result, UnsupportedFormat)
+    assert "docx ilegível" in result.reason
+
+
 def test_docx_text_is_capped_with_a_note(tmp_path, monkeypatch):
     make_docx(tmp_path / "a.docx")
     monkeypatch.setattr(loaders, "MAX_TEXT_CHARS", 20)

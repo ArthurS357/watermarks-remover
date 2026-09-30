@@ -135,6 +135,12 @@ def clean(snippet: str) -> str:
     return " ".join(_CONTROL.sub(" ", snippet).split())[:100]
 
 
+def printable(text: str) -> str:
+    """``text`` with C0/C1 control characters replaced: for file names and reasons that reach a
+    terminal or a markdown report (a name can carry an escape sequence on POSIX)."""
+    return _CONTROL.sub("?", text)
+
+
 def metric(name: str, value: float, severity: str | None, snippet: str) -> list[Signal]:
     """A document-level signal (no line); empty when the metric is below every threshold."""
     if severity is None:

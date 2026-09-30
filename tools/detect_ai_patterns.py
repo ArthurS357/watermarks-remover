@@ -37,6 +37,7 @@ from stylometry import (
     Signal,
     cap_confidence,
     loaders,
+    printable,
 )
 from stylometry import code as code_signals
 from stylometry import text as text_signals
@@ -111,7 +112,7 @@ def _ignored(rel: str, name: str, patterns: tuple[str, ...]) -> bool:
 
 
 def iter_files(root: Path, options: Options) -> Iterator[Path]:
-    """Files under ``root`` in a stable order. Symlinks are never followed or read."""
+    """Files under ``root`` in a stable order. Symlinks and NTFS junctions are never followed."""
     if root.is_file():
         yield root
         return
@@ -122,6 +123,7 @@ def iter_files(root: Path, options: Options) -> Iterator[Path]:
             d
             for d in dirnames
             if d not in DEFAULT_IGNORED_DIRS
+            and not os.path.isjunction(here / d)  # walk() follows junctions; islink() is False
             and not _ignored((rel_dir / d).as_posix(), d, options.ignore)
             and not (options.exclude_tests and d in TEST_DIRS)
         )
@@ -160,7 +162,7 @@ def scan(root: Path, options: Options) -> Scan:
         loaded = loaders.load(path)
         if isinstance(loaded, loaders.UnsupportedFormat):
             result.skipped.append((rel, loaded.reason))
-            print(f"aviso: {rel} pulado: {loaded.reason}", file=sys.stderr)
+            print(f"aviso: {printable(rel)} pulado: {printable(loaded.reason)}", file=sys.stderr)
             continue
         ctx = code_signals.Context(
             small_project=small,
@@ -229,8 +231,8 @@ def render_json(result: Scan, min_severity: str) -> str:
     return json.dumps(report, ensure_ascii=False, indent=2) + "\n"
 
 
-def _quote(snippet: str) -> str:
-    return "`" + snippet.replace("`", "'") + "`"
+def _quote(text: str) -> str:
+    return "`" + printable(text).replace("`", "'") + "`"
 
 
 def render_md(result: Scan, min_severity: str) -> str:
@@ -252,7 +254,7 @@ def render_md(result: Scan, min_severity: str) -> str:
     if not shown:
         out.append("Nenhum sinal no nível pedido.")
     for rank, f in enumerate(shown, 1):
-        out += [f"### {rank}. `{f.path}`", ""]
+        out += [f"### {rank}. {_quote(f.path)}", ""]
         out.append(f"Score {f.score:.2f} · confiança {f.confidence} · {f.language}")
         out.append("")
         groups: dict[str, list[Signal]] = {}
@@ -274,7 +276,8 @@ def render_md(result: Scan, min_severity: str) -> str:
         out += [f"- _{n}_" for n in f.notes]
         out.append("")
     if result.skipped:
-        out += ["## Arquivos pulados", ""] + [f"- `{p}`: {r}" for p, r in result.skipped] + [""]
+        skipped = [f"- {_quote(p)}: {printable(r)}" for p, r in result.skipped]
+        out += ["## Arquivos pulados", "", *skipped, ""]
     return "\n".join(out)
 
 
