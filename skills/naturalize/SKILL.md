@@ -78,10 +78,11 @@ Cada transformação só roda se o detector da R10 ainda dispara o sinal dela no
 Antes de transformar, estes trechos viram marcadores opacos e voltam idênticos no fim:
 
 - números (`1234`, `0.5`, `50%`, `2 MB`: nenhuma regra toca dígito; `10—20` é intervalo e fica);
-- hashes (`3f7c25d`), código inline (`` `code` ``), blocos de código (``` e ~~~), front matter;
+- hashes (`3f7c25d`), código inline (`` `code` ``), blocos de código (cercados por ``` ou ~~~, e indentados), front matter, e títulos setext (texto sublinhado com `===` ou `---`);
 - URLs, e-mails, destinos de link, caminhos (`E:\...`, `/usr/...`, `docs/x.md`), tags HTML;
-- citações entre aspas (`"..."`, `“...”`, `«...»`) e citações em bloco (`>`);
-- identificadores (`snake_case`, `CamelCase`, `UPPER_CASE`), e tabelas markdown inteiras.
+- citações entre aspas (`"..."`, `“...”`, `«...»`, `'...'`) e citações em bloco (`>`); uma aspa ou crase que abre numa linha e fecha na seguinte segura o parágrafo até fechar;
+- identificadores (`snake_case`, `CamelCase`, `UPPER_CASE`), e tabelas markdown inteiras (também as sem pipe inicial: toda linha com `|` fora de código fica);
+- intervalos numéricos com travessão, colado ou com espaço (`10—20`, `1999 — 2005`, `9h — 17h`, `5% — 10%`).
 
 Um identificador ou e-mail no começo da oração não é capitalizado quando um lead-in cai (`Vale notar que get_user falha` → `get_user falha`).
 
@@ -103,7 +104,10 @@ O score satura por faixa de severidade. Cair de 9 ocorrências para 3 de um mesm
 
 - **Não reescreve frases.** `sentence_uniformity`, `paragraph_uniformity` e `type_token_ratio` ficam como estão. Tabelas (`comparison_table_symmetry`) também: tabela é dado.
 - **Só o que o dicionário conhece.** Um título como "O que saiu" é contado pelo detector, mas não é trocado. `dive in` sem objeto, `mergulhar` em português e hedges separados por quebra de linha ficam.
-- **Travessão vira vírgula também onde a frase pediria ponto.** Fica legível, mas revise o diff.
+- **Código indentado dentro de item de lista não é reconhecido** (dentro de lista, linha indentada conta como continuação). Use bloco cercado por ``` nesses casos.
+- **Travessão vira vírgula também onde a frase pediria ponto.** Fica legível, mas revise o diff. Um intervalo sem número (`segunda — sexta`) vira lista (`segunda, sexta`).
+- **Texto quebrado em linhas fixas (hard-wrap).** Uma linha que continua a anterior (a anterior não termina em ponto) não é começo de frase, então um "vale notar que" ali fica. O mesmo vale para um `**Termo** — x` colado, sem linha em branco, logo abaixo de outro item.
+- **Nome de ferramenta em minúscula** fora de uma lista curta (`pip`, `npm`, `git`, `uv`...) é capitalizado se abrir a frase depois de um lead-in removido. Aspas curly aninhadas protegem só o par de dentro.
 - **Falso positivo em texto técnico disciplinado.** Um documento pode pontuar alto só por usar negrito e tabelas, que é o formato dele. Nesse caso reduzir o score não melhora o texto.
 - **Não é evasão de detector.** O score é estilométrico desta ferramenta, não de um detector de terceiros. Baixá-lo não prova autoria humana nem torna o texto indetectável, e divulgações exigidas (acadêmicas, legais, de plataforma) devem ser mantidas.
 

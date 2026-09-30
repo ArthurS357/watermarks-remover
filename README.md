@@ -919,9 +919,13 @@ python tools/naturalize.py ARQUIVO [--format text|md|json] [--diff-only | --in-p
   dois transformaria dúvida em certeza), `delve_family` (`delve into X` vira `look at X`),
   `worth_noting` (`vale notar que X` vira `X`) e `fast_paced_world` (apaga "In today's fast-paced
   world,").
-- **O que nunca muda.** Números, hashes, código inline e em bloco, URLs, e-mails, caminhos,
-  citações entre aspas e em bloco, identificadores (`snake_case`, `CamelCase`, `UPPER_CASE`),
-  tabelas e front matter. Um título cuja âncora o mesmo arquivo referencia também fica.
+- **O que nunca muda.** Números, hashes, código inline e em bloco (cercado ou indentado), URLs,
+  e-mails, caminhos, citações entre aspas e em bloco, identificadores (`snake_case`, `CamelCase`,
+  `UPPER_CASE`), tabelas (também as sem pipe inicial), front matter e títulos setext. Uma aspa ou
+  crase aberta numa linha e fechada na seguinte segura o parágrafo. Intervalos numéricos com
+  travessão (`10 — 20`) ficam. Um título cuja âncora o mesmo arquivo referencia também fica, e um
+  título novo nunca toma o slug de outro. Código indentado dentro de item de lista não é
+  reconhecido, e `segunda — sexta` (sem número) vira lista.
 - **Fora de escopo, de propósito.** Ritmo de frase e de parágrafo, vocabulário e `type_token_ratio`
   (reescrever frase é semântico), tabelas simétricas e todos os sinais de código.
 - **Idempotente.** Rodar sobre a própria saída não muda nada (exit 3). `--diff-only` mostra o diff e
