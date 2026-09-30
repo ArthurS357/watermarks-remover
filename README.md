@@ -795,11 +795,12 @@ on the host instead. Model downloads still hit the HF hub on first run.
 
 ## Detecção estilométrica
 
-Dois scripts isolados em `tools/` (não tocam o serviço HTTP nem as skills) apontam hábitos de
-estilo no texto e no código que **você** escreveu: travessões em excesso, títulos de modelo,
-comentários óbvios e assim por diante, para você reescrever. Não dizem quem escreveu nada. A saída
-traz `signals`, um `score` de 0.0 a 1.0, `confidence` (`low`, `medium`, `high`) e o `disclaimer`.
-É determinístico: regex, `ast` e contagens, sem modelo e sem rede.
+Três scripts isolados em `tools/` (não tocam o serviço HTTP) cuidam de hábitos de estilo no texto
+e no código que **você** escreveu: travessões em excesso, títulos de modelo, comentários óbvios e
+assim por diante. Dois apontam e medem; o terceiro, `naturalize.py`, reescreve o texto para tirar
+os hábitos que são só estrutura. Nenhum diz quem escreveu nada. A saída traz `signals`, um `score`
+de 0.0 a 1.0, `confidence` (`low`, `medium`, `high`) e o `disclaimer`. É determinístico: regex,
+`ast` e contagens, sem modelo e sem rede.
 
 Não substituem o `service/scripts/score_stylometry.py` (o `--stylometry` do serviço), e não
 compartilham código com ele. Aquele dá uma pontuação única só para texto, com exit 1 acima de um
@@ -897,6 +898,85 @@ tests/fixtures/stylometry/text_ai_like.md tests/fixtures/stylometry/text_human_l
 Os limiares e pesos são uma escolha desta ferramenta, sem calibração contra um corpus. Este
 repositório pontua alto contra si mesmo nos próprios documentos (negrito de abertura, tabelas):
 leia como sugestão de revisão, nunca como medida de autoria.
+
+### Naturalização (`tools/naturalize.py`)
+
+O `/clean-user-facing-text` **não reduz** o score deste detector (na R10, sobre o `docs/DONE.md`, o
+delta foi +0,0132: piorou). O `naturalize.py` é a ferramenta que reduz, de forma verificável: oito
+reescritas determinísticas dos sinais estruturais que o detector conta, cada uma só quando o
+detector ainda dispara o sinal dela.
+
+```bash
+python tools/naturalize.py ARQUIVO [--format text|md|json] [--diff-only | --in-place] \
+    [--signals sinal1,sinal2] [--preserve GLOB] [--output ARQUIVO]
+```
+
+- **Formatos.** Um `.md` ou `.txt` por chamada, até 1 MB, em UTF-8. `.html`, `.docx`, `.pdf` e
+  código saem com exit 2: não há como reescrevê-los de volta de forma determinística.
+- **O que muda.** `bold_lead_in` (`**Termo** — x` vira `Termo: x`), `em_dash_density` (`a — b` vira
+  `a, b`), `template_heading` e `emoji_heading` (título de modelo vira título simples, tira o
+  emoji), `hedge_double` (`pode ser que talvez X` vira `talvez X`: fica um hedge, porque tirar os
+  dois transformaria dúvida em certeza), `delve_family` (`delve into X` vira `look at X`),
+  `worth_noting` (`vale notar que X` vira `X`) e `fast_paced_world` (apaga "In today's fast-paced
+  world,").
+- **O que nunca muda.** Números, hashes, código inline e em bloco, URLs, e-mails, caminhos,
+  citações entre aspas e em bloco, identificadores (`snake_case`, `CamelCase`, `UPPER_CASE`),
+  tabelas e front matter. Um título cuja âncora o mesmo arquivo referencia também fica.
+- **Fora de escopo, de propósito.** Ritmo de frase e de parágrafo, vocabulário e `type_token_ratio`
+  (reescrever frase é semântico), tabelas simétricas e todos os sinais de código.
+- **Idempotente.** Rodar sobre a própria saída não muda nada (exit 3). `--diff-only` mostra o diff e
+  não escreve; `--in-place` troca o arquivo de uma vez e mantém BOM e fim de linha. Revise o diff
+  antes: um título renomeado muda a âncora, e links de **outros** arquivos a ele não são vistos.
+- **Saída.** Exit 0 mudou algo; 1 caminho inexistente ou falha ao escrever; 2 formato não
+  suportado ou não UTF-8; 3 nada aplicável. `--format json` traz `score_before`, `score_after`,
+  `delta`, `signals_before`/`signals_after`, cada edição (`transforms`) e o que foi protegido
+  (`preserved_spans`). O score é o de `detect_ai_patterns.py`, então o `delta` bate com o do
+  `measure_skill_effectiveness.py`.
+
+Exemplo real, `python tools/naturalize.py nota.md`, com este `nota.md`:
+
+```markdown
+## Why this matters
+
+- **Velocidade** — o parser roda em tempo linear.
+- **Segurança**: entradas hostis rodam isoladas.
+- **Custo:** zero dependências.
+
+In today's fast-paced world, vale notar que o commit 3f7c25d mudou 1234 linhas — e `delve into` segue no código.
+```
+
+```markdown
+## Relevance
+
+- Velocidade: o parser roda em tempo linear.
+- Segurança: entradas hostis rodam isoladas.
+- Custo: zero dependências.
+
+O commit 3f7c25d mudou 1234 linhas — e `delve into` segue no código.
+```
+
+Score 0.28 → 0.04 (delta −0,24, efetividade `medium`, confiança `low`: texto curto). O travessão
+da última linha ficou porque um só está abaixo do limiar do detector, e `delve into` porque está
+entre crases.
+
+Medido no `docs/DONE.md` deste repositório (`naturalize.py` e depois o compare da R10): score
+0,392 → 0,219, **delta −0,173** (efetividade `medium`). O `bold_lead_in` (23 ocorrências) some;
+`comparison_table_symmetry` e `template_heading` (`### O que saiu`, que não está no dicionário)
+ficam. A queda vem de tirar o negrito dos rótulos, que é formatação: o score mede o que o detector
+conta, não se o texto ficou melhor.
+
+**Skills.** `skills/naturalize/` e `skills/detect-ai-patterns/` tornam os dois scripts invocáveis
+de qualquer sessão do Claude Code ("humaniza esse texto", "esse texto parece IA?"). O corpo de cada
+uma também é a documentação da ferramenta. Elas acham o repositório por `WATERMARKS_REPO` e, sem
+ela, por `E:\Projetos\Scripts\watermarks-remover`. Para instalá-las em `~/.claude/skills/`:
+
+```bash
+python install_skill.py --skill naturalize --cursor-home ~/.claude
+python install_skill.py --skill detect-ai-patterns --cursor-home ~/.claude
+```
+
+O instalador copia a pasta inteira e, sem `--force`, recusa-se a sobrescrever uma instalação
+existente. Sem `--skill`, continua instalando `clean-user-facing-text` em `~/.cursor`.
 
 ## Coverage matrix
 
