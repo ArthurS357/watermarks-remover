@@ -201,3 +201,19 @@ def test_skill_binary_magic_matches_service_binary_magic():
         f"skill common.py BINARY_MAGIC is missing: {service_magic - skill_magic}, "
         f"or has extra: {skill_magic - service_magic}"
     )
+
+
+def test_installer_installs_a_named_skill_for_claude_code(tmp_path):
+    claude = tmp_path / ".claude"
+    result = _run_installer(tmp_path, "--skill", "remove-ai-marks", "--cursor-home", str(claude))
+
+    assert (claude / "skills" / "remove-ai-marks" / "SKILL.md").is_file()
+    assert "Claude Code: installed" in result.stdout
+    assert not (claude / "skills" / SKILL.name).exists()  # only the requested skill
+
+
+def test_installer_refuses_a_skill_that_does_not_exist(tmp_path):
+    result = _run_installer(tmp_path, "--skill", "nope", check=False)
+
+    assert result.returncode == 2
+    assert not (tmp_path / ".cursor").exists()
