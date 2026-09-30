@@ -1,5 +1,181 @@
 # TODO — watermarks-remover
 
+## Rodada R10 — 2026-09-30 — Detecção estilométrica e medição de efetividade
+
+Em andamento. Duas entregas independentes, **scripts CLI isolados** (não tocam
+`service/scripts/server.py` nem as skills): `tools/detect_ai_patterns.py` (sinais
+estilométricos em texto e código) e `tools/measure_skill_effectiveness.py` (antes/depois).
+Uso pessoal: o output ajuda a revisar o que você escreveu, não a acusar terceiros. Nunca emite
+`is_ai`; sempre `signals`, `score` 0.0–1.0, `confidence` low|medium|high e `disclaimer`.
+
+### Baseline (FASE 0, HEAD `2302a15`)
+
+| Medida | Valor | Esperado |
+|---|---|---|
+| `pytest` | 755 coletados / **748 passed / 7 skipped**, exit 0 (184 s) | bate |
+| `ruff check .` / `ruff format --check .` | limpos, 102 arquivos | bate |
+| `pip-audit` (`.venv`) | **3 vulns em `urllib3 2.7.0`** (CVE-2026-97687/97688/97689, fix 2.8.0) | a R9 registrou 0 |
+
+O `pip-audit` divergiu da R9 por advisories publicados depois dela. `urllib3` é transitivo do
+`pip-audit`/`requests` na `.venv` de dev, não está em `requirements-dev.txt` e não entra no
+serviço. O critério explícito de parada (755/748/7) bate, então a rodada segue. "Sem novas
+vulnerabilidades" da FASE 5 é medido contra estes 3. **Decisão do usuário pendente:** subir o
+`urllib3` na `.venv` (ação local, como a Q6 da R6). Não foi feito nesta rodada.
+
+### Achados da FASE 0 que mudam premissas do prompt
+
+| # | Achado | Consequência no plano |
+|---|---|---|
+| A1 | **Não existe `pyproject.toml`.** Config em `ruff.toml`, `pytest.ini`, `.coveragerc`; deps em `requirements-dev.txt`. A R6-07 manteve isso de propósito | R10-06 **cria** um `pyproject.toml` só com `[dependency-groups]`, sem `[project]`. Nada é consolidado. `ruff.toml`/`pytest.ini`/`.coveragerc` têm precedência sobre ele e a FASE 5 confirma que nada mudou |
+| A2 | **`.gitignore` é deny-by-default** (`/*`). `tools/` e `pyproject.toml` seriam ignorados pelo git | Novo R10-08: `!/tools/`, `!/tools/**` (bloco 1) e `!/pyproject.toml` (bloco 6). `stylometry-report.md` na raiz já é ignorado, então não há risco de commitá-lo |
+| A3 | **`uv sync --group formats` é exato e remove o pytest da venv** (testado numa cópia: `- pytest`, `- pluggy`…). Sem `[project]` ele também cria `.venv` e `uv.lock` e avisa "no `requires-python`" | O README recomenda `uv pip install --group formats` / `pip install --group formats` (aditivos) e documenta `uv sync --inexact --group formats`. O comando literal do prompt fica com o aviso |
+| A4 | `tree-sitter 0.26.0` + `tree-sitter-typescript 0.23.2` instalam e parseiam no Windows com Python 3.14 (testado em venv de teste) | Sem limitação de Windows a declarar. O fallback regex existe para a **ausência** do grupo |
+| A5 | A CI instala só `requirements-dev.txt`, em Python **3.12 e 3.14**, em 3 SOs. `ruff.toml` tem `target-version = py312` | Testes novos passam **sem** `python-docx`/`pypdf`/`tree-sitter` (`importorskip` nos caminhos pesados). Nada de sintaxe acima de 3.12 |
+| A6 | `ruff check .`/`ruff format --check .` varrem `tests/fixtures/`. `code_ai_like.py` tem comentário óbvio e em-dash de propósito | `ruff.toml`: `extend-exclude = ["tests/fixtures/stylometry"]` (bloco 2) |
+| A7 | Já existe `service/scripts/score_stylometry.py` (burstiness, MATTR, frases-clichê, sem linha por sinal) | **Não reaproveitado**, por duas razões: cada sinal precisa de `linha`/`snippet` (o existente descarta a posição) e o prompt exige script isolado, sem acoplar ao serviço. As duas ferramentas ficam separadas; o README explica a diferença |
+| A8 | `pip-audit`, `bandit` e `mypy` não estão na `.venv`; `pip-audit` está (2.10.1), `bandit`/`mypy` só no Python global | FASE 5 roda `bandit`/`mypy` do Python global e compara o bandit com o baseline da R9 (Low 32 / Medium 1 / High 0 em `service/scripts/`) |
+| A9 | `mutmut` não roda no Windows (R6) | Sem mutation testing. Cobertura de `tools/` medida com `--cov=tools`, sem mexer no `.coveragerc` |
+
+### Plano
+
+| ID | Item | Arquivos | Bloco de commit |
+|---|---|---|---|
+| R10-01 | Sinais de texto | `tools/stylometry/__init__.py` (`Signal`, score, disclaimer), `text.py`, `tests/test_stylometry_text.py`, `tests/fixtures/stylometry/text_{ai,human}_like.md` | 1 |
+| R10-08 | `.gitignore` libera `tools/` e `pyproject.toml`; `ruff.toml` exclui fixtures | `.gitignore` (blocos 1 e 6), `ruff.toml` (bloco 2) | 1, 2, 6 |
+| R10-02 | Sinais de código | `tools/stylometry/code.py`, `tests/test_stylometry_code.py`, `tests/fixtures/stylometry/code_{ai,human}_like.py`, `code_ai_like.tsx` | 2 |
+| R10-05 | Carregadores de formato | `tools/stylometry/loaders.py`, `tests/test_stylometry_loaders.py` | 3 |
+| R10-03 | CLI de detecção | `tools/detect_ai_patterns.py`, `tests/test_detect_ai_patterns.py`, README (uso, formatos, disclaimer, exemplo real) | 4 |
+| R10-04 | CLI de medição | `tools/measure_skill_effectiveness.py`, `tests/test_measure_skill_effectiveness.py`, README (uso) | 5 |
+| R10-06 | `[dependency-groups].formats` | `pyproject.toml`, README (grupo, `--inexact`) | 6 |
+| R10-07 | README, seção "Detecção estilométrica" | `README.md` (montada nos blocos 4, 5 e 6) | 4, 5, 6 |
+| R10-09 | Dogfooding e registro | `docs/DONE.md`, `docs/TODO.md`. Relatório e cópia reescrita ficam **fora do git** | 7 |
+
+Os testes de sinais ficam em arquivos próprios (`test_stylometry_text/code/loaders.py`) em vez
+de tudo em `test_detect_ai_patterns.py`: um commit por bloco e arquivos abaixo de 800 linhas.
+`test_detect_ai_patterns.py` fica só com CLI e integração.
+
+**Ordem de execução e de commit:** plano (`docs(todo)`) → 1 → 2 → 3 → 4 → 5 → 6 → 7, a mesma
+ordem do prompt. TDD dentro de cada bloco: teste vermelho (positivo e negativo por sinal),
+implementação, verde, `ruff`, suíte completa. README do bloco 4 já aponta o grupo opcional;
+as instruções de instalação do grupo chegam no bloco 6 junto com o `pyproject.toml`.
+
+### Contrato comum
+
+- `Signal(name, value, severity, line, snippet)`, `NamedTuple`. Sinal por ocorrência: `value` =
+  total daquele sinal no arquivo, `line` = linha da ocorrência. Sinal de documento (métricas):
+  `line = None`. `severity` ∈ low | medium | high.
+- **Score** = `min(1.0, Σ peso(categoria) × força(severidade máxima de cada sinal) / 8.0)`.
+  Força: low 0.33, medium 0.66, high 1.0. Peso: **estrutural 2.0, lexical 1.0, métrica 0.5**.
+  Desvio deliberado de "média ponderada" pura: a média só dos sinais disparados dá 1.0 a um
+  único sinal alto, e a média sobre o catálogo inteiro nunca passa de ~0.4, o que tornaria o
+  limiar `delta < -0.30` da R10-04 inalcançável. O divisor 8.0 é um orçamento de saturação,
+  calibrado nas fixtures (AI-like ≥ 0.6, human-like ≤ 0.2) e não é probabilidade.
+- **Confidence** por tamanho da amostra: texto < 150 palavras low, < 600 medium, senão high;
+  código < 40 linhas de código low, < 200 medium, senão high. Teto `low` para TS/JS em regex
+  fallback e teto `medium` para PDF (perde heading, negrito e tabela).
+- `--min-severity` filtra o que é **listado**; o score é sempre calculado com todos os sinais.
+
+### Sinais de texto (`tools/stylometry/text.py`), limiares preliminares
+
+Limiares sem calibração contra corpus real, por decisão da rodada (sem modelo estatístico).
+Linhas numeradas sobre o arquivo original: front matter e blocos de código viram linhas em
+branco antes da análise, sem renumerar.
+
+| Sinal | Categoria | Regra | L / M / H |
+|---|---|---|---|
+| `em_dash_density` | lexical | `—` por frase | ≥0.20 / ≥0.40 / ≥0.80 |
+| `not_just_but` | lexical | "não é apenas X, é Y", "not just X, it's Y" (PT/EN) | 1 / 2 / ≥3 |
+| `delve_family` | lexical | `delve`, `dive in`; `explore`/`unpack` só após "let's/we'll/vamos" | 1 / 2 / ≥3 |
+| `worth_noting` | lexical | "vale notar", "importante ressaltar", "it's worth noting" | 1 / 2 / ≥4 |
+| `fast_paced_world` | lexical | "in today's fast-paced", "em um mundo onde" | — / 1 / ≥2 |
+| `on_the_other_hand_cascade` | lexical | 3+ "por outro lado"/"on the other hand" numa janela de 2500 caracteres | — / 3 / ≥5 |
+| `hedge_double` | lexical | dois hedges a ≤2 palavras ("pode ser que talvez", "arguably perhaps") | 1 / 2 / ≥3 |
+| `bold_lead_in` | estrutural | `**Termo**` seguido de `—`, `–`, `:` ou `-`, em linha ou item de lista | ≥3 / ≥6 / ≥12 |
+| `tricolon_uniform` | estrutural | série de 3 itens (com ou sem vírgula de Oxford) em 3+ parágrafos seguidos | — / 3 / ≥5 |
+| `template_heading` | estrutural | `^#+\s*(Por que\|O que\|A linha\|Why\|What\|The bottom)` | 1 / 2 / ≥3 |
+| `emoji_heading` | estrutural | heading com `U+1F300–1FAFF` ou dingbats `U+2600–27BF` | 1 / 2 / ≥4 |
+| `meta_commentary` | estrutural | "nesta seção", "como vimos", "in this section" | 1 / 2 / ≥4 |
+| `paragraph_uniformity` | estrutural | desvio-padrão de frases/parágrafo < 0.5 (≥5 parágrafos) | — / <0.5 / <0.25 |
+| `sentence_uniformity` | estrutural | desvio-padrão de palavras/frase < 5 (≥8 frases) | — / <5 / <3 |
+| `declarative_close` | estrutural | "Não é X. É Y." / "It's not X. It's Y." | fora do fecho L / no último parágrafo M / — |
+| `here_is_why` | estrutural | "Aqui está por quê:", "Here's why:" | 1 / 2 / ≥3 |
+| `comparison_table_symmetry` | estrutural | tabela markdown com colunas de tamanho médio dentro de ±10% | — / 1 tabela / ≥2 |
+| `type_token_ratio` | métrica | únicos/total nas primeiras 300 palavras (≥100 palavras) | <0.50 / <0.42 / <0.35 |
+| `sentence_length_stddev` | métrica | desvio-padrão de palavras/frase, só na faixa [5, 7), para não contar duas vezes com `sentence_uniformity` | [5,7) / — / — |
+| `paragraph_length_stddev` | métrica | desvio-padrão de palavras/parágrafo (≥5 parágrafos) | <12 / <8 / <4 |
+| `em_dash_to_comma_ratio` | métrica | `—` / vírgulas | ≥0.15 / ≥0.30 / ≥0.60 |
+
+### Sinais de código (`tools/stylometry/code.py`), limiares preliminares
+
+| Sinal | Categoria | Regra | L / M / H |
+|---|---|---|---|
+| `docstring_echoes_name` | estrutural (ast) | docstring de 1 linha cujas palavras são as do nome + artigos | 1 / ≥3 / ≥6 |
+| `obvious_comment` | lexical | `# Initialize/Set/Import/Define/Create/Return…` antes de statement de 1 linha | 1 / ≥3 / ≥6 |
+| `comment_density` | métrica | linhas de comentário / linhas de código (≥30 linhas de código) | ≥0.15 / ≥0.20 / ≥0.25 |
+| `type_hint_on_trivial_local` | estrutural (ast) | `x: int = 0` dentro de função, valor literal | 1 / ≥3 / ≥6 |
+| `generic_try_except` | estrutural (ast) | `except Exception:`/`BaseException`/bare + só `pass` | — / 1 / ≥3 |
+| `excessive_params` | estrutural (ast) | função com ≥10 parâmetros (sem `self`/`cls`) | — / ≥10 / ≥14 |
+| `over_descriptive_name` | estrutural (ast) | nome com ≥4 palavras e ≥30 caracteres. **Só se o scan tem ≤50 arquivos de código** ("projeto pequeno") | 1 / ≥3 / ≥6 |
+| `complete_main_boilerplate` | estrutural (ast) | guard `__main__` + argparse + logging + try/except | — / todos / — |
+| `future_annotations_on_314` | estrutural (ast) | `from __future__ import annotations` com `requires-python >= 3.14` lido do `pyproject.toml` mais próximo. **Sem `requires-python`, não dispara** (é o caso deste repo) | 1 / — / — |
+| `match_where_if_fits` | estrutural (ast) | `match` com 2 casos, padrões só literal/valor/curinga, sem guarda | 1 / ≥3 / — |
+| `as_const_everywhere` | estrutural (TS) | `as const` sobre literal primitivo | ≥3 / ≥6 / ≥10 |
+| `optional_chaining_overuse` | estrutural (TS) | cadeia com ≥3 `?.`, ou `?.` em `this`/literal/`const` inicializado com literal no mesmo arquivo | ≥3 / ≥6 / ≥12 |
+| `jsdoc_on_trivial_type` | estrutural (TS) | `@param {string\|number\|boolean…}` em `.ts/.tsx`; em `.js/.jsx` só sem descrição | 1 / ≥3 / ≥6 |
+| `explicit_return_types_on_arrow` | estrutural (TS) | `(): void =>` em arrow inline (argumento de chamada ou atributo JSX) | 1 / ≥3 / ≥6 |
+| `warning_comment` | lexical | `# Note:`/`# Important:`/`# WARNING:` sem palavra crítica (security, race, never, secret…) | 1 / ≥3 / ≥6 |
+| `todo_comment_style` | lexical | ≥3 `TODO(autor):` com o mesmo formato | ≥3 / ≥6 / — |
+
+TS/JS: `tree-sitter` quando instalado (`.ts` na gramática typescript; `.tsx/.js/.jsx` na tsx);
+regex como fallback. O resultado marca qual dos dois rodou e o fallback limita `confidence`.
+
+### CLIs: decisões que o prompt deixou abertas
+
+- **Pastas ignoradas por padrão:** `.git`, `.venv`, `venv`, `node_modules`, `__pycache__`,
+  `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, `.code-review-graph`, `dist`, `build`. Sem isso,
+  `detect_ai_patterns.py .` varreria a `.venv` inteira. `--ignore` soma a esta lista.
+  Arquivo maior que 2 MB é pulado com motivo. `--output` dentro da árvore varrida é pulado na
+  própria execução.
+- **Saída:** `disclaimer` no topo do JSON e do relatório, dos dois CLIs. Arquivo sem dependência
+  (`.docx`/`.pdf`) vira `skipped` com o motivo e o comando de instalação, sem abortar.
+  Exit 2 quando nenhum arquivo foi analisado, inclusive se todos os suportados foram pulados.
+- **`measure_skill_effectiveness`:** `delta = depois − antes` (negativo é melhora). Faixas do
+  prompt: `< −0.30` high; `[−0.30, −0.10)` medium; senão low. Além dos campos pedidos, inclui
+  `signal_deltas` (por sinal) e `signals_introduced` (sinais que só existem depois).
+  `--signals` restringe score e listas aos sinais nomeados. Em diretório, `files` por caminho
+  relativo mais `aggregate`; arquivos de um lado só vão para `unmatched_*`.
+- **Dogfooding (R10-09):** a "cópia reescrita fora do git" do `docs/DONE.md` fica no scratchpad
+  da sessão. Os testes do compare usam o par tracked `text_ai_like.md` / `text_human_like.md`,
+  não a cópia. A skill `clean-user-facing-text` é invocada via `Skill` na FASE 4 (não está no
+  gate de skills, mas é o objeto da medição). n = 1 arquivo: não generaliza.
+
+### Riscos por item
+
+- **R10-01:** limiares arbitrários e falsos positivos em texto técnico disciplinado (esperado,
+  no disclaimer). ReDoS nos regex: quantificadores limitados e teste de tempo com entrada de 1 MB.
+  `type_token_ratio` depende do tamanho do texto, por isso a janela de 300 palavras. Decode:
+  `utf-8-sig` com `errors="replace"`, sem abortar em arquivo estranho.
+- **R10-02:** `ast.parse` falha em arquivo com erro de sintaxe: o arquivo mantém os sinais de
+  regex e ganha nota `parse_error`. `over_descriptive_name` e `future_annotations_on_314` dependem
+  de contexto (tamanho do scan, `requires-python`): sem o contexto, ficam quietos, não chutam.
+  O regex de TS só aproxima `optional_chaining_overuse`; nulidade de verdade exige o type checker.
+- **R10-05:** `python-docx`/`pypdf` leem arquivo não confiável. Limite de tamanho, `try/except`
+  largo com mensagem, PDF criptografado ou que trava vira `skipped`. `html.parser` ignora
+  `script`/`style`. Diferenças de API do `tree-sitter` entre versões caem no fallback com nota.
+- **R10-03:** diretório grande e symlink (`followlinks=False`), encoding, relatório
+  auto-ingerido (tratado acima). O repo vai pontuar alto contra si mesmo: é o insight, não falha.
+- **R10-04:** pareamento por caminho relativo; o mesmo conjunto de limiares nos dois lados,
+  senão o delta mede a mudança de régua.
+- **R10-06:** `uv sync` exato apagando dev deps (A3, documentado). `pyproject.toml` novo não pode
+  mudar o comportamento de `ruff`/`pytest`/`coverage`: a FASE 5 roda a suíte inteira e o
+  `ruff` antes e depois, e confere que os dois continuam lendo os arquivos próprios.
+- **R10-07:** o exemplo de saída no README vem de execução real (`--format md` num arquivo do
+  repo), não escrito à mão. O README já tem 77 KB: a seção fica curta.
+- **R10-08:** a allowlist do `.gitignore` tem que liberar `tools/` sem abrir o resto. Conferido
+  com `git status` e `git check-ignore` depois de cada bloco.
+- **R10-09:** a cópia reescrita é feita por mim, seguindo a skill. A medição mostra o efeito
+  dessa aplicação, não da skill em geral.
+
 ## Rodada R9 — 2026-09-25 — Fechamento e verificação de uso
 
 Concluída. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-09-25). **Sistema pronto
