@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
-import json
 import sys
 import textwrap
 import time
@@ -17,6 +15,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from stylometry import CATEGORY, SEVERITIES
 from stylometry import code as sc
+from stylometry_support import in_process
 
 FIXTURES = ROOT / "tests" / "fixtures" / "stylometry"
 
@@ -44,27 +43,16 @@ TS_SIGNALS = {
 }
 
 
-def _in_process(target, args, timeout):
-    """Stand-in for ``isolate.call``: same JSON round trip, same target, no child process.
-
-    The real worker is exercised by the tests that ask for the ``real_worker`` fixture (and by
-    test_stylometry_isolate.py); everything else runs the worker's code here so that it is fast
-    and visible to coverage, which does not follow into a spawned process.
-    """
-    module, _, name = target.partition(":")
-    function = getattr(importlib.import_module(module), name)
-    return json.loads(json.dumps(function(*json.loads(json.dumps(args)))))
-
-
 @pytest.fixture
 def real_worker():
+    """Ask for this fixture to keep the real worker process instead of the in-process stand-in."""
     return None
 
 
 @pytest.fixture(autouse=True)
 def _worker_code_in_process(request, monkeypatch):
     if "real_worker" not in request.fixturenames:
-        monkeypatch.setattr(sc.isolate, "call", _in_process)
+        monkeypatch.setattr(sc.isolate, "call", in_process)
 
 
 needs_tree_sitter = pytest.mark.skipif(
