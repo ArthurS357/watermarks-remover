@@ -16,15 +16,17 @@ The catalogue is deliberately small. See ``docs/TODO.md`` (round R11) for what i
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from itertools import islice
 from typing import NamedTuple
+from urllib.parse import unquote
 
 from . import Analysis, clean
 from . import text as text_signals
-from .text import _EMOJI, _FENCE, _FRONT_KEY, _H
+from .text import _EMOJI, _FENCE, _FRONT_KEY, _H, _LIST
 
 MAX_PASSES = 20  # every pass removes triggers and none creates one, so this is a safety net
 
@@ -32,6 +34,7 @@ _EOL = re.compile(r"(\r\n|\n|\r)")
 _HEAD = re.compile(r"^(\s{0,3}#{1,6}[ \t]+)(.*)$")
 _ANCHOR = re.compile(r"#([\w%-]+)")
 _REF_DEF = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*\S")
+_SETEXT = re.compile(r"^\s{0,3}(?:=+|-+)[ \t]*$")
 
 
 class Transform(NamedTuple):
@@ -61,7 +64,8 @@ class Result(NamedTuple):
 
 # --- masking -----------------------------------------------------------------------------------
 
-_VERB_LEAD = r"(?:let['’]s|let\s+us|let\s+me|we['’]ll|we\s+will|i['’]ll|i\s+will|to|shall\s+we)"
+# "dive into" can be literal ("safe to dive into the lake"), so only lead-ins that announce a topic.
+_VERB_LEAD = r"(?:let['’]s|let\s+us|let\s+me|we['’]ll|we\s+will|i['’]ll|i\s+will|shall\s+we)"
 
 _INLINE = re.compile(
     "|".join(
@@ -72,7 +76,12 @@ _INLINE = re.compile(
             ("html", r"<[A-Za-z/!][^>\n]{0,300}>"),
             ("url", r"\b(?:https?|ftp|file)://[^\s<>\"'`)\]]+|\bwww\.[^\s<>\"'`)\]]+"),
             ("email", r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
-            ("quote", r"\"[^\"\n]+\"|“[^”\n]+”|«[^»\n]+»"),
+            # A span never contains its own opener: a run of unmatched openers would otherwise be
+            # quadratic. Single quotes count only where an apostrophe cannot be (not after a letter).
+            (
+                "quote",
+                r"\"[^\"\n]+\"|“[^“”\n]+”|«[^«»\n]+»|(?<![\w'])'[^'\n]{1,200}'(?![\w'])",
+            ),
             (
                 "path",
                 r"(?<!\w)[A-Za-z]:[\\/][^\s\"'<>|*?`]*"
@@ -134,25 +143,65 @@ def _line_kinds(lines: list[str], preserve: Sequence[str]) -> list[str | None]:
         if end is not None:
             kinds[: end + 1] = ["front matter"] * (end + 1)
             start = end + 1
-    fence: str | None = None
+    fence = ""  # the opening run of ` or ~, empty outside a fence
+    state, gap = (
+        "none",
+        True,
+    )  # the last non-blank line (none|prose|list|code) and a blank before it
     for i in range(start, len(lines)):
         line = lines[i]
         m = _FENCE.match(line)
-        if fence is None and m:
-            fence, kinds[i] = m.group(1)[0], "code block"
-        elif fence is not None:
+        if not fence and m:
+            fence, kinds[i] = m[1], "code block"
+        elif fence:
             kinds[i] = "code block"
-            if m and m.group(1)[0] == fence:
-                fence = None
-        elif line.lstrip().startswith("|"):
-            kinds[i] = "table"
-        elif line.lstrip().startswith(">"):
-            kinds[i] = "quote block"
-        elif _REF_DEF.match(line):
-            kinds[i] = "link definition"
-        elif any(fnmatchcase(line.strip(), glob) for glob in preserve):
-            kinds[i] = "preserve"
+            if m and _closes(fence, m[1], line):
+                fence = ""
+        elif not line.strip():
+            gap = True
+            continue
+        else:
+            kinds[i], state = _classify(lines, i, state, gap, preserve)
+            gap = False
+            continue
+        state, gap = "none", True
     return kinds
+
+
+def _closes(opener: str, run: str, line: str) -> bool:
+    """A closing fence repeats the opener's character at least as many times and has no info
+    string: a ``` line inside a ```` block is content (``text._mask`` lets it close the block)."""
+    return run[0] == opener[0] and len(run) >= len(opener) and not line.lstrip()[len(run) :].strip()
+
+
+def _classify(
+    lines: list[str], i: int, state: str, gap: bool, preserve: Sequence[str]
+) -> tuple[str | None, str]:
+    """The reason line ``i`` (outside a fence) is off limits, and the state for the next line.
+
+    An indented line is code when it follows a blank line outside a list (or continues code): inside
+    a list it is a continuation. A line over a ``===``/``---`` underline is a setext title, whose
+    anchor must not move. Code indented inside a list item is not recognised (TODO R11)."""
+    line = lines[i]
+    indented = line.startswith(("    ", "\t"))
+    if indented and (state == "code" or (gap and state != "list")):
+        return "indented code", "code"
+    stripped = line.lstrip()
+    listed = bool(_LIST.match(line))
+    kind = None
+    if stripped.startswith("|"):
+        kind = "table"
+    elif stripped.startswith(">"):
+        kind = "quote block"
+    elif _REF_DEF.match(line):
+        kind = "link definition"
+    elif any(fnmatchcase(line.strip(), glob) for glob in preserve):
+        kind = "preserve"
+    elif (
+        not listed and not _HEAD.match(line) and i + 1 < len(lines) and _SETEXT.match(lines[i + 1])
+    ):
+        kind = "setext title"
+    return kind, "list" if listed or (state == "list" and indented) else "prose"
 
 
 def _block_spans(kinds: list[str | None], lines: list[str]) -> list[Span]:
@@ -167,13 +216,81 @@ def _block_spans(kinds: list[str | None], lines: list[str]) -> list[Span]:
     return spans
 
 
+_OPENERS = {'"': '"', "“": "”", "«": "»", "`": "`"}
+_SENTENCE_END = re.compile(r"[.!?…:;][\"')\]*_”’]*\s*$")
+
+
+def _hold_lines(masked: list[str], lines: list[str], kinds: list[str | None]) -> None:
+    """Protect what the per-line masks cannot see. After masking, a quote mark or backtick that is
+    left over is an opener without its closer on that line: the span wraps onto the next lines, so
+    those lines are held until the closer or the end of the paragraph. A line with a ``|`` outside
+    code is a table row even without a leading pipe."""
+    closer = ""
+    for i, line in enumerate(masked):
+        if kinds[i] is not None or not line.strip():
+            closer = ""
+            continue
+        if "|" in line:
+            kind, closer = "table row", ""
+        elif closer:
+            kind, closer = "open quote", "" if closer in line else closer
+        else:
+            closer = _OPENERS.get(next((c for c in line if c in _OPENERS), ""), "")
+            kind = "open quote" if closer else ""
+        if kind:
+            kinds[i], masked[i] = kind, lines[i]
+
+
+def _glued(masked: list[str], kinds: list[str | None]) -> set[int]:
+    """Lines that continue a sentence the previous line left open (hard-wrapped prose), so a line
+    start there is not a sentence start. A block start (title, list item) never continues one."""
+    out = set()
+    for i in range(1, len(masked)):
+        prev, line = masked[i - 1], masked[i]
+        if (
+            kinds[i] is None
+            and kinds[i - 1] is None
+            and prev.strip()
+            and line.strip()
+            and not _HEAD.match(prev)
+            and not _HEAD.match(line)
+            and not _LIST.match(line)
+            and not _SENTENCE_END.search(prev)
+        ):
+            out.add(i)
+    return out
+
+
+def _heading_ids(
+    lines: list[str], kinds: list[str | None], anchors: frozenset[str]
+) -> tuple[frozenset[str], frozenset[str]]:
+    """(titles the document links to, every heading's slug). GitHub numbers repeated titles
+    ``slug``, ``slug-1``, ``slug-2``: a linked one must keep its title, and a new title must not
+    take the slug of a heading that exists (it would push that heading's anchor to ``-1``)."""
+    seen: Counter[str] = Counter()
+    kept: set[str] = set()
+    for line, kind in zip(lines, kinds, strict=True):
+        if kind == "setext title":
+            title = line.strip()
+        elif kind is None and (head := _heading(line)):
+            title = head[1]
+        else:
+            continue
+        slug = _slug(title)
+        if (f"{slug}-{seen[slug]}" if seen[slug] else slug) in anchors:
+            kept.add(title)
+        seen[slug] += 1
+    return frozenset(kept), frozenset(seen)
+
+
 # --- transformations ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class _Ctx:
-    anchors: frozenset[str]  # every ``#slug`` the document links to
     restore: Callable[[str], str]
+    kept: frozenset[str]  # titles whose anchor the document links to
+    slugs: frozenset[str]  # the slug of every heading in the document
 
 
 def _heading(line: str) -> tuple[str, str, str] | None:
@@ -191,8 +308,33 @@ def _slug(title: str) -> str:
     return re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
 
 
+# Names that are written in lower case on purpose: "pip installs wheels" stays "pip".
+_LOWER_NAMES = frozenset(
+    {"pip", "pipx", "npm", "pnpm", "yarn", "npx", "uv", "git", "gh", "curl", "wget", "brew", "apt"}
+    | {
+        "docker",
+        "kubectl",
+        "make",
+        "cmake",
+        "gcc",
+        "clang",
+        "node",
+        "deno",
+        "bun",
+        "cargo",
+        "rustc",
+    }
+    | {"pytest", "ruff", "mypy", "bandit", "tox", "nox", "poetry", "conda", "bash", "zsh", "sudo"}
+    | {"ssh", "scp", "rsync", "grep", "sed", "awk", "ffmpeg", "jq", "vim", "nvim"}
+)
+
+
 def _upper_first(word: str | None) -> str:
-    return word.upper() if word and word.islower() else (word or "")
+    """Capitalise the first letter of ``word`` (the first word after a dropped lead-in), unless it
+    is a placeholder, already capitalised, or a name written in lower case."""
+    if not word or not word[0].islower() or word in _LOWER_NAMES:
+        return word or ""
+    return word[0].upper() + word[1:]
 
 
 _LEAD_IN = re.compile(r"^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)\*\*([^*\n]+?)\*\*(\s*[—–:-])?")
@@ -220,14 +362,20 @@ _WORD_SIDE = r"\w)\]}*_'’”»%" + _PUA
 _DASH = re.compile(rf"(?<=[{_WORD_SIDE}])[ \t]*—[ \t]*(?=[\w(\[*_'\"“‘«{_PUA}])")
 
 
+_RANGE_FROM = re.compile(r"\d[A-Za-z%]{0,3}$")  # "10", "9h", "5%": the end of a range's first half
+_RANGE_TO = frozenset("0123456789$€£")
+
+
 def _em_dash(line: str, ctx: _Ctx) -> str:
-    """A dash with text on both sides becomes a comma, unless it is a number range (``10—20``)."""
+    """A dash with text on both sides becomes a comma, unless it is a number range (``10—20``,
+    ``9h — 17h``, ``5% — 10%``, spaced or not). ``Monday — Friday`` has no digit and becomes a list."""
     if _HEAD.match(line):
         return line  # rewriting a title would move its anchor
 
     def swap(m: re.Match[str]) -> str:
-        tight = m[0] == "—"
-        if tight and line[m.start() - 1].isdigit() and line[m.end()].isdigit():
+        if line[m.end()] in _RANGE_TO and _RANGE_FROM.search(
+            line, max(0, m.start() - 6), m.start()
+        ):
             return m[0]
         return ", "
 
@@ -262,7 +410,8 @@ _SYMBOLS = re.compile(r"^[^\w\s]+\s*")
 
 def _template_heading(line: str, ctx: _Ctx) -> str:
     """A known template title becomes a plain one in the same language. The title is left alone
-    when the document links to its anchor (the link would break)."""
+    when the document links to its anchor, or when the new one would take an existing slug (either
+    way an anchor would move and a link break)."""
     head = _heading(line)
     if not head or ctx.restore(head[1]) != head[1]:
         return line
@@ -271,7 +420,7 @@ def _template_heading(line: str, ctx: _Ctx) -> str:
     cut = lead.end() if lead else 0
     key = " ".join(title[cut:].lower().replace("’", "'").split()).rstrip("?!.:; ")
     new = _TEMPLATES.get(key)
-    if new is None or _slug(title) in ctx.anchors:
+    if new is None or title in ctx.kept or _slug(new) in ctx.slugs:
         return line
     return f"{marker}{title[:cut]}{new}{tail}"
 
@@ -281,14 +430,14 @@ _JOINERS = re.compile(f"[{chr(0xFE0F)}{chr(0x200D)}]")  # variation selector, ZW
 
 def _emoji_heading(line: str, ctx: _Ctx) -> str:
     """Drop the emoji from a title (and the joiners that belong to it), unless an anchor points
-    at the title or nothing would be left."""
+    at the title, the bare title is another heading's slug, or nothing would be left."""
     head = _heading(line)
     if not head or not _EMOJI.search(head[1]):
         return line
     marker, old, tail = head
     title = _JOINERS.sub("", _EMOJI.sub("", old))
     title = re.sub(r"[ \t]{2,}", " ", title).strip(" \t")
-    if not title or _slug(ctx.restore(old)) in ctx.anchors:
+    if not title or ctx.restore(old) in ctx.kept or _slug(ctx.restore(title)) in ctx.slugs:
         return line
     return f"{marker}{title}{tail}"
 
@@ -303,7 +452,8 @@ _FAST_LEAD = (
     r"na\s+era\s+(?:digital|da\s+informa[cç][aã]o)",
 )
 _FAST = re.compile(
-    rf"(?P<head>{_START})(?:(?:{'|'.join(_FAST_LEAD)})[ \t]*,[ \t]+)+(?P<nxt>.)?", re.IGNORECASE
+    rf"(?P<head>{_START})(?:(?:{'|'.join(_FAST_LEAD)})[ \t]*,[ \t]+)+(?P<nxt>[^\W\d_]+|.)?",
+    re.IGNORECASE,
 )
 
 
@@ -326,7 +476,7 @@ _CONNECTOR = (
 )
 _WORTH = re.compile(
     rf"(?P<head>(?:^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?|(?<=[.!?:;,])[ \t]+){_CONNECTOR})"
-    rf"(?:(?:{'|'.join(_WORTH_LEAD)})[ \t]+)+(?P<nxt>.)?",
+    rf"(?:(?:{'|'.join(_WORTH_LEAD)})[ \t]+)+(?P<nxt>[^\W\d_]+|.)?",
     re.IGNORECASE,
 )
 
@@ -354,10 +504,11 @@ _DELVE_VERBS = {
     "dove": "looked",
     "diving": "looking",
 }
-_DELVE = re.compile(r"\b(delv(?:e|es|ed|ing))([ \t]+deeper)?[ \t]+into\b", re.IGNORECASE)
-# "dive into" is also literal ("dive into the water"), so it needs a lead-in that makes it figurative.
+# ASCII: under IGNORECASE alone "ı" (dotless i) and "ſ" match "i" and "s", and no verb has them.
+_ASCII_I = re.ASCII | re.IGNORECASE
+_DELVE = re.compile(r"\b(delv(?:e|es|ed|ing))([ \t]+deeper)?[ \t]+into\b", _ASCII_I)
 _DIVE = re.compile(
-    rf"\b({_VERB_LEAD}[ \t]+)(div(?:e|es|ed|ing)|dove)([ \t]+deeper)?[ \t]+into\b", re.IGNORECASE
+    rf"\b({_VERB_LEAD}[ \t]+)(div(?:e|es|ed|ing)|dove)([ \t]+deeper)?[ \t]+into\b", _ASCII_I
 )
 
 
@@ -408,20 +559,31 @@ def _one_pass(
     lines, ends = parts[0::2], [*parts[1::2], ""]
     kinds = _line_kinds(lines, preserve)
     masker = _Masker(text)
-    ctx = _Ctx(anchors, masker.restore)
     masked = [
         masker.mask(line, n) if kinds[n - 1] is None else line for n, line in enumerate(lines, 1)
     ]
+    _hold_lines(masked, lines, kinds)
+    ctx = _Ctx(masker.restore, *_heading_ids(lines, kinds, anchors))
+    # Prefixed to a wrapped line, so that nothing anchored at the line start matches it. No step
+    # can touch these two characters: one is a sentinel, the other a newline, which no pattern eats.
+    glue = masker.open + "\n"
+    glued = _glued(masked, kinds)
     edits: list[Transform] = []
     for name, step in _STEPS:
         if name not in active:
             continue
         for i, line in enumerate(masked):
-            if kinds[i] is None and (new := step(line, ctx)) != line:
+            if kinds[i] is not None:
+                continue
+            new = step(glue + line if i in glued else line, ctx)
+            new = new.removeprefix(glue) if i in glued else new
+            if new != line:
                 edits.append(Transform(name, i + 1, masker.restore(line), masker.restore(new)))
                 masked[i] = new
     spans = [*_block_spans(kinds, lines), *masker.spans]
     rebuilt = "".join(masker.restore(m) + end for m, end in zip(masked, ends, strict=True))
+    if masker.open in rebuilt or masker.close in rebuilt:  # sentinels are absent from the input
+        raise RuntimeError("um marcador de máscara vazou para o texto")
     return rebuilt, edits, spans
 
 
@@ -434,7 +596,7 @@ def naturalize(
     of globs: a line that matches one is never touched.
     """
     selected = [n for n in TRANSFORMS if signals is None or n in signals]
-    anchors = frozenset(_ANCHOR.findall(text))
+    anchors = frozenset(a.lower() for raw in _ANCHOR.findall(text) for a in (raw, unquote(raw)))
     before = current = text_signals.analyze(text)
     now = text
     edits: list[Transform] = []

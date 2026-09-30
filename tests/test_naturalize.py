@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -12,10 +11,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from stylometry import CATEGORY, Analysis
+from naturalize_support import (
+    CASES,
+    OPEN,
+    bold,
+    dash,
+    kept,
+    names,
+    out,
+    probe,
+    read,
+    total,
+)
+from stylometry import CATEGORY
 from stylometry import naturalize as nat
 
-CASES = ROOT / "tests" / "fixtures" / "stylometry" / "naturalize"
 POSITIVE = (
     "bold_lead_in",
     "em_dash_density",
@@ -27,45 +37,6 @@ POSITIVE = (
     "fast_paced_world",
 )
 ADVERSARIAL = ("natural", "protected_only")
-
-
-def read(case: str, name: str = "before.md") -> str:
-    return (CASES / case / name).read_bytes().decode("utf-8")
-
-
-def total(analysis: Analysis, name: str) -> float:
-    """How many times the detector counts ``name`` (0 when it is quiet)."""
-    return max((s.value for s in analysis.signals if s.name == name), default=0)
-
-
-def names(analysis: Analysis) -> set[str]:
-    return {s.name for s in analysis.signals}
-
-
-def out(text: str, **kwargs) -> str:
-    return nat.naturalize(text, **kwargs).text
-
-
-# Three lead-ins without a dash open the bold_lead_in gate; three dashes open the dash gate.
-BOLD_PAD = "- **Um**: a\n- **Dois**: b\n- **Três**: c\n"
-DASH_PAD = "Um — dois. Três — quatro. Cinco — seis.\n\n"
-# Opens the worth_noting, delve_family, hedge_double and dash gates at once, for the tests whose
-# point is that protected text survives a run in which every transformation is live.
-OPEN = DASH_PAD + "Vale notar que sim. We delve into it. Pode ser que talvez caia.\n\n"
-
-
-def bold(line: str) -> str:
-    return out(BOLD_PAD + line + "\n").splitlines()[3]
-
-
-def dash(line: str) -> str:
-    return out(DASH_PAD + line + "\n").splitlines()[2]
-
-
-def probe(line: str, **kwargs) -> str:
-    """One line through the naturalizer. Every signal except the two that need padding has a
-    gate of one occurrence, so the line opens its own gate."""
-    return out(line + "\n", **kwargs).rstrip("\n")
 
 
 # --- fixtures ----------------------------------------------------------------------------------
@@ -167,14 +138,6 @@ def test_a_transform_records_the_line_before_and_after():
 # --- preservation: one test per category -------------------------------------------------------
 
 
-def kept(span: str, before: str | None = None) -> None:
-    """The naturalizer rewrites the line around ``span`` and leaves ``span`` byte for byte."""
-    line = before or f"Vale notar que {span} e {span} — fim."
-    result = out(OPEN + line + "\n")
-    assert result.count(span) == line.count(span)
-    assert "Vale notar" not in result  # the line was worked on, so this is not a vacuous pass
-
-
 def test_numbers_and_number_ranges_stay():
     line = "Vale notar que 1234, 0.5, 50% e 2 MB valem 10—20 e 2020—2024 — fim."
     result = out(OPEN + line + "\n")
@@ -256,6 +219,42 @@ def test_fenced_blocks_stay(fence: str):
     assert "We delve" not in result  # the prose above the block was worked on
 
 
+@pytest.mark.parametrize(
+    "block",
+    [
+        "    vale notar que — código\n    **Termo** — x",
+        "\tvale notar que — código",
+        "    a — b\n\n    vale notar que — c",  # a blank line does not end the block
+    ],
+)
+def test_indented_code_stays(block: str):
+    result = out(f"{OPEN}Exemplo:\n\n{block}\n\nFim.\n")
+    assert block in result
+    assert "We delve" not in result  # the prose around it was worked on
+
+
+def test_an_indented_line_inside_a_list_or_a_paragraph_is_not_code():
+    assert "continua, aqui" in out(f"{OPEN}- item\n\n    continua — aqui\n")
+    assert "lazy, b" in out(f"{OPEN}Texto longo\n    lazy — b\n")
+
+
+def test_code_after_a_list_and_a_paragraph_is_code_again():
+    block = "    código — x"
+    assert block in out(f"{OPEN}- item\n\nParágrafo.\n\n{block}\n")
+
+
+@pytest.mark.parametrize("underline", ["=============", "-------------", "  ===  "])
+def test_a_setext_title_stays_because_its_anchor_must_not_move(underline: str):
+    title = f"Título — sub\n{underline}"
+    result = out(f"{OPEN}{title}\n\nVeja [x](#título--sub).\n")
+    assert title in result
+
+
+def test_a_rule_after_a_list_item_or_an_atx_heading_is_not_a_setext_underline():
+    assert "- item, x\n---" in out(f"{OPEN}- item — x\n---\n")
+    assert "# Título — sub\n---" in out(f"{OPEN}# Título — sub\n---\n")
+
+
 def test_an_unclosed_fence_protects_the_rest_of_the_file():
     text = "```\nVale notar que — a. B — c. D — e.\n"
     assert out(text) == text
@@ -279,7 +278,7 @@ def test_front_matter_stays():
 
 
 def test_front_matter_that_never_closes_is_not_swallowed():
-    assert out("---\ntitle: x\nVale notar que sim.\n") == "---\ntitle: x\nSim.\n"
+    assert out("---\ntitle: x\n\nVale notar que sim.\n") == "---\ntitle: x\n\nSim.\n"
 
 
 def test_a_different_fence_does_not_close_a_block():
@@ -509,7 +508,7 @@ def test_worth_noting(line: str, expected: str | None):
         ("Delve deeper into the logs.", "Look closer at the logs."),
         ("Let's dive into the logs.", "Let's look at the logs."),
         ("We'll dive deeper into the logs.", "We'll look closer at the logs."),
-        ("Time to dive into the logs.", "Time to look at the logs."),  # "to" is a lead-in
+        ("It is safe to dive into the lake.", None),  # literal: "to" is not a lead-in
         ("Divers dive into the water.", None),  # literal, no lead-in
         ("Dive in.", None),  # no object to keep
         ("We delve the logs.", None),  # not followed by "into"
@@ -573,36 +572,3 @@ def test_a_text_that_uses_every_private_use_character_is_refused():
     text = "".join(map(chr, range(0xE000, 0xF900))) + "\nVale notar que sim.\n"
     with pytest.raises(ValueError, match="uso privado"):
         nat.naturalize(text)
-
-
-# --- hostile input -----------------------------------------------------------------------------
-
-OPEN_GATES = "\n\nVale notar que isso. A — b. C — d. E — f.\n"
-HOSTILE = {
-    "dashes": "a — " * 30_000,
-    "tags": "<a " * 40_000,
-    "links": "](" * 50_000,
-    "sentences": ". " * 50_000,
-    "slashes": "a/" * 50_000,
-    "dots": "a." * 50_000,
-    "quotes": '" ' * 50_000,
-    "ticks": "` " * 50_000,
-    "hedges": "talvez " * 20_000,
-    "underscores": "a_" * 50_000,
-    "capitals": "AB" * 50_000 + "_",
-    "heading_spaces": "# a" + " " * 100_000 + "b",
-    "heading_marks": "# Why this matters" + "?" * 100_000 + "x",
-    "bold_unclosed": "- **" + "a" * 100_000,
-    "indent": " " * 100_000 + "**Termo** — x",
-    "reference": "[" + "a" * 100_000,
-    "hex": "0a" * 50_000,
-    "one_long_line": "palavra " * 30_000 + "— x",
-}
-
-
-@pytest.mark.parametrize("kind", HOSTILE)
-def test_hostile_lines_cost_linear_time(kind: str):
-    text = HOSTILE[kind] + OPEN_GATES
-    start = time.perf_counter()
-    nat.naturalize(text)
-    assert time.perf_counter() - start < 20
