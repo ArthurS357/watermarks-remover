@@ -22,13 +22,13 @@ test-cov-subprocess:
 	$(PYTHON) -m coverage report -m
 
 lint:
-	$(PYTHON) -m ruff check service tests
+	$(PYTHON) -m ruff check service tests tools
 
 format:
-	$(PYTHON) -m ruff format --check service tests
+	$(PYTHON) -m ruff format --check service tests tools
 
 lint-fix:
-	$(PYTHON) -m ruff check --fix service tests
+	$(PYTHON) -m ruff check --fix service tests tools
 
 smoke:
 	-python3 $(SCRIPTS)/inspect_text.py tests/fixtures/sample_watermarked.txt

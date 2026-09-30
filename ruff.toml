@@ -21,6 +21,9 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
+# The stylometry detectors match curly apostrophes, en/em dashes and emoji on purpose; RUF001/
+# RUF003 would flag exactly the characters the regexes exist to find.
+"tools/stylometry/*.py" = ["RUF001", "RUF003"]
 # Tests import scripts via sys.path manipulation; the delayed imports are
 # intentional, so don't demand E402 there (ruff already tolerates them, but
 # be explicit).
