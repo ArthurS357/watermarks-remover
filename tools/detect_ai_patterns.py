@@ -85,6 +85,7 @@ class Options:
     ignore: tuple[str, ...] = ()
     exclude_tests: bool = False
     skip: Path | None = None  # resolved path that is never scanned (the report being written)
+    warn: bool = True  # print a line on stderr for every file that could not be read
 
 
 @dataclass(frozen=True)
@@ -162,7 +163,10 @@ def scan(root: Path, options: Options) -> Scan:
         loaded = loaders.load(path)
         if isinstance(loaded, loaders.UnsupportedFormat):
             result.skipped.append((rel, loaded.reason))
-            print(f"aviso: {printable(rel)} pulado: {printable(loaded.reason)}", file=sys.stderr)
+            if options.warn:
+                print(
+                    f"aviso: {printable(rel)} pulado: {printable(loaded.reason)}", file=sys.stderr
+                )
             continue
         ctx = code_signals.Context(
             small_project=small,
@@ -231,7 +235,7 @@ def render_json(result: Scan, min_severity: str) -> str:
     return json.dumps(report, ensure_ascii=False, indent=2) + "\n"
 
 
-def _quote(text: str) -> str:
+def quote(text: str) -> str:
     return "`" + printable(text).replace("`", "'") + "`"
 
 
@@ -254,7 +258,7 @@ def render_md(result: Scan, min_severity: str) -> str:
     if not shown:
         out.append("Nenhum sinal no nível pedido.")
     for rank, f in enumerate(shown, 1):
-        out += [f"### {rank}. {_quote(f.path)}", ""]
+        out += [f"### {rank}. {quote(f.path)}", ""]
         out.append(f"Score {f.score:.2f} · confiança {f.confidence} · {f.language}")
         out.append("")
         groups: dict[str, list[Signal]] = {}
@@ -265,18 +269,18 @@ def render_md(result: Scan, min_severity: str) -> str:
         ):
             where = [s for s in group if s.line is not None]
             detail = "; ".join(
-                f"linha {s.line}: {_quote(s.snippet)}" for s in where[:LINES_PER_SIGNAL]
+                f"linha {s.line}: {quote(s.snippet)}" for s in where[:LINES_PER_SIGNAL]
             )
             more = f" (+{len(where) - LINES_PER_SIGNAL})" if len(where) > LINES_PER_SIGNAL else ""
             if not where:  # a document-level metric has no line
-                detail = f"documento: {_quote(group[0].snippet)}"
+                detail = f"documento: {quote(group[0].snippet)}"
             out.append(
                 f"- `{name}` ({group[0].severity}, valor {group[0].value:g}): {detail}{more}"
             )
         out += [f"- _{n}_" for n in f.notes]
         out.append("")
     if result.skipped:
-        skipped = [f"- {_quote(p)}: {printable(r)}" for p, r in result.skipped]
+        skipped = [f"- {quote(p)}: {printable(r)}" for p, r in result.skipped]
         out += ["## Arquivos pulados", "", *skipped, ""]
     return "\n".join(out)
 
@@ -284,7 +288,7 @@ def render_md(result: Scan, min_severity: str) -> str:
 # --- command line ------------------------------------------------------------------------------
 
 
-def _utf8_streams() -> None:
+def utf8_streams() -> None:
     """Snippets carry emoji and em dashes; Windows consoles default to cp1252 and would crash."""
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(AttributeError, ValueError, OSError):
@@ -313,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    _utf8_streams()
+    utf8_streams()
     root = Path(args.path)
     if not root.exists():
         print(f"erro: o caminho não existe: {root}", file=sys.stderr)
