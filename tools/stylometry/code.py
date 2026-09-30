@@ -3,7 +3,8 @@
 TS/JS use tree-sitter when ``tree-sitter`` and ``tree-sitter-typescript`` are installed (the
 ``formats`` dependency group) and fall back to regexes otherwise: less precise, so the result
 carries a note and the confidence is capped at ``low``. Python needs only the standard library.
-Every regex is anchored or possessive, so a hostile 1 MB file costs one scan, not a stall.
+Cost is linear in the file size: regexes are anchored (lookbehind) or bounded, and a few perf
+tests run adversarial blobs against each of them. Files too big for ``ast`` skip the AST signals.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import importlib
 import io
 import re
 import tokenize
+import warnings
 from dataclasses import dataclass
 from re import Pattern
 from typing import Any, NamedTuple
@@ -40,7 +42,7 @@ class Context:
     """Facts one file cannot tell. When a fact is absent, the signal that needs it stays quiet
     instead of guessing."""
 
-    small_project: bool = True  # over_descriptive_name only makes sense in a small code base
+    small_project: bool = False  # over_descriptive_name only makes sense in a small code base
     requires_python: tuple[int, int] | None = None  # floor from the nearest pyproject.toml
 
 
@@ -57,8 +59,11 @@ class Comment(NamedTuple):
         return self.raw.lstrip("#/").strip()
 
 
+# Tool directives (shebang, noqa, type: ignore, pragma, ...) are not prose: they do not count as
+# comments in the density metric. Word boundaries keep "Pragmatic choice: ..." a real comment.
 _DIRECTIVE = re.compile(
-    r"(?:!|noqa|type:|pragma|pylint|fmt:|ruff:|mypy:|pyright:|isort:|flake8|-\*-|(?:vim?|coding)[:=])",
+    r"(?:!|noqa\b|type:\s*ignore\b|pragma\b|pylint\b|fmt:|ruff:|mypy:|pyright:|isort:|flake8\b"
+    r"|-\*-|(?:vim?|coding)[:=])",
     re.IGNORECASE,
 )
 _WARN = re.compile(r"(?:note|important|warning|caution|attention)\s*:\s*(.*)", re.IGNORECASE)
@@ -69,10 +74,12 @@ _CRITICAL = re.compile(
     re.IGNORECASE,
 )
 _TODO = re.compile(r"\bTODO\b")
-_TODO_SHAPED = re.compile(r"\bTODO\([^)\s]+\)\s*:")
+_TODO_SHAPED = re.compile(r"\bTODO\([^)\s]{1,80}\)\s*:")
 _OBVIOUS = re.compile(
     r"(?:initiali[sz]e|set|import|define|create|return|increment|call|get|add)\b", re.IGNORECASE
 )
+# A comment that explains *why* ("because", "see #412", "Return early: ...") is not obvious.
+_EXPLAINS = re.compile(r"[:(]|\b(?:because|since|see)\b", re.IGNORECASE)
 
 
 def _py_comments(source: str, lines: list[str]) -> list[Comment]:
@@ -191,18 +198,26 @@ def _obvious(nodes: list[ast.AST], lines: list[str], comments: list[Comment]) ->
     for n in nodes:  # ast.walk is breadth-first: the outer statement wins a shared line
         if isinstance(n, ast.stmt):
             stmts.setdefault(n.lineno, n)
+    # next_code[i]: first code line after line i (blank and comment-only lines are skipped),
+    # built backwards in one pass. Scanning forward from every comment is quadratic on a wall
+    # of consecutive comments.
+    next_code = [0] * (len(lines) + 2)
+    following = len(lines) + 1
+    for i in range(len(lines), 0, -1):
+        next_code[i] = following
+        stripped = lines[i - 1].lstrip()
+        if stripped and stripped[0] != "#":
+            following = i
     found: list[Hit] = []
     for c in comments:
-        if not (c.full_line and _OBVIOUS.match(c.body)):
+        body = c.body
+        if not (c.full_line and _OBVIOUS.match(body)):
             continue
-        nxt = c.line + 1
-        while nxt <= len(lines) and (
-            not lines[nxt - 1].strip() or lines[nxt - 1].lstrip()[0] == "#"
-        ):
-            nxt += 1
-        stmt = stmts.get(nxt)
+        if len(body.split()) > 6 or _EXPLAINS.search(body):
+            continue  # a long comment, or one that says why, is not stating the obvious
+        stmt = stmts.get(next_code[c.line])
         if isinstance(stmt, _SIMPLE) and stmt.end_lineno == stmt.lineno:
-            found.append(Hit(c.line, c.raw[:100]))
+            found.append(Hit(c.line, c.raw))
     return occurrences("obvious_comment", found, by_count(len(found), 1, 3, 6))
 
 
@@ -225,7 +240,7 @@ def _is_literal(value: ast.expr) -> bool:
     return isinstance(value, ast.List | ast.Set | ast.Tuple) and not value.elts
 
 
-def _trivial_locals(nodes: list[ast.AST]) -> list[Signal]:
+def _trivial_locals(nodes: list[ast.AST], lines: list[str]) -> list[Signal]:
     found: dict[tuple[int, int], Hit] = {}
     for fn in nodes:
         if not isinstance(fn, _FUNCS):
@@ -237,23 +252,25 @@ def _trivial_locals(nodes: list[ast.AST]) -> list[Signal]:
                 and n.value is not None
                 and _is_literal(n.value)
             ):
-                found[(n.lineno, n.col_offset)] = Hit(n.lineno, ast.unparse(n)[:100])
+                # The source line, not ast.unparse: unparse recurses and a deep annotation such
+                # as ``x: a.a.a...`` raises RecursionError on a perfectly valid file.
+                found[(n.lineno, n.col_offset)] = Hit(n.lineno, lines[n.lineno - 1])
     hits = [found[k] for k in sorted(found)]
     return occurrences("type_hint_on_trivial_local", hits, by_count(len(hits), 1, 3, 6))
 
 
+_BROAD = {"Exception", "BaseException"}
+
+
 def _generic_except(nodes: list[ast.AST]) -> list[Signal]:
     found = [
-        Hit(n.lineno, f"except {ast.unparse(n.type) if n.type else ''}: pass".replace(" :", ":"))
+        Hit(n.lineno, f"except {n.type.id if n.type else ''}: pass".replace(" :", ":"))
         for n in nodes
         if isinstance(n, ast.ExceptHandler)
         and (n.type is None or (isinstance(n.type, ast.Name) and n.type.id in _BROAD))
         and all(isinstance(s, ast.Pass) for s in n.body)
     ]
     return occurrences("generic_try_except", found, by_count(len(found), medium=1, high=3))
-
-
-_BROAD = {"Exception", "BaseException"}
 
 
 def _params(nodes: list[ast.AST]) -> list[Signal]:
@@ -349,35 +366,48 @@ def _match(nodes: list[ast.AST]) -> list[Signal]:
     return occurrences("match_where_if_fits", found, by_count(len(found), 1, 3))
 
 
+MAX_AST_BYTES = 500_000  # the AST is ~500x the source in memory on dense literals
+
+
 def _python(source: str, lines: list[str], ctx: Context) -> tuple[list[Signal], list[str]]:
     comments = _py_comments(source, lines)
     signals = [*_comment_signals(comments), *_density(lines, comments)]
+    if len(source) > MAX_AST_BYTES:
+        return signals, [f"arquivo grande ({len(source)} caracteres); sinais de AST ignorados"]
     try:
-        tree = ast.parse(source)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)  # valid code with "\d" escapes
+            tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
         return signals, [f"parse_error: {type(exc).__name__}; sinais de AST ignorados"]
-    nodes = list(ast.walk(tree))
-    signals += [
-        *_obvious(nodes, lines, comments),
-        *_docstring_echo(nodes),
-        *_trivial_locals(nodes),
-        *_generic_except(nodes),
-        *_params(nodes),
-        *_names(nodes, ctx),
-        *_main_boilerplate(tree, nodes),
-        *_future(tree, ctx),
-        *_match(nodes),
-    ]
+    try:
+        nodes = list(ast.walk(tree))
+        signals += [
+            *_obvious(nodes, lines, comments),
+            *_docstring_echo(nodes),
+            *_trivial_locals(nodes, lines),
+            *_generic_except(nodes),
+            *_params(nodes),
+            *_names(nodes, ctx),
+            *_main_boilerplate(tree, nodes),
+            *_future(tree, ctx),
+            *_match(nodes),
+        ]
+    except RecursionError:  # a valid but absurdly deep tree: keep the comment signals
+        return signals, ["análise da AST interrompida (RecursionError); sinais de AST ignorados"]
     return signals, []
 
 
 # --- TypeScript / JavaScript -------------------------------------------------------------------
 
+# The lookbehinds matter: ``\b`` restarts a scan at every word boundary, so ``a$a$a$...`` or
+# ``1.1.1...`` made these quadratic. A lookbehind only lets a run start once.
 _LITERAL = (
-    r"""(?:"[^"\\\n]{0,200}"|'[^'\\\n]{0,200}'|`[^`\\\n]{0,200}`|\b\d[\d_.]*+|\btrue\b|\bfalse\b)"""
+    r"""(?:"[^"\\\n]{0,200}"|'[^'\\\n]{0,200}'|`[^`\\\n]{0,200}`"""
+    r"""|(?<![\w$.])\d[\d_.]*+|\btrue\b|\bfalse\b)"""
 )
 _AS_CONST = re.compile(_LITERAL + r"\s+as\s+const\b")
-_CHAIN = r"\b[\w$]++(?:\?\.[\w$]++(?:\([^()]*\))?){3,}"
+_CHAIN = r"(?<![\w$])[\w$]++(?:\?\.[\w$]++(?:\([^()]*\))?){3,}"
 _OPTIONAL = re.compile(_CHAIN + r"|\bthis\?\.")
 _ARROW = re.compile(
     r"(?:[(,]|=\{)\s*(?:async\s+)?\([^()]*\)\s*:\s*(?:void|string|number|boolean)\s*=>"

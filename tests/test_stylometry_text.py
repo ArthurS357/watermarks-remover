@@ -313,6 +313,34 @@ def test_line_numbers_follow_the_original_file():
     assert "vale notar que sim" in signal.snippet
 
 
+def test_front_matter_that_never_closes_is_not_swallowed():
+    text = "---\ntitle: x\nvale notar que sim.\n"
+    assert [s.line for s in hits(text, "worth_noting")] == [3]
+
+
+def test_a_leading_horizontal_rule_is_not_front_matter():
+    # "---" + blank line is a rule, not YAML: it used to swallow everything up to the next "---".
+    text = "---\n\nVale notar que sim.\n\nPor outro lado, nao.\n\n---\n\nResto.\n"
+    assert "worth_noting" in names(text)
+
+
+def test_snippets_never_carry_control_characters():
+    analysis = st.analyze("Vale notar \x1b]0;pwned\x07\x1b[2J que sim.")
+    assert analysis.signals
+    bad = [
+        s for s in analysis.signals if any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in s.snippet)
+    ]
+    assert bad == []
+
+
+def test_block_count_is_capped_with_a_note():
+    analysis = st.analyze("a\n\n" * (st.MAX_BLOCKS + 10_000))
+    assert any(str(st.MAX_BLOCKS) in n for n in analysis.notes)
+    start = time.perf_counter()
+    st.analyze("a\n\n" * 200_000)
+    assert time.perf_counter() - start < 15
+
+
 def test_line_separator_characters_do_not_shift_line_numbers():
     text = "um dois\x0ctres\n\nvale notar que sim.\n"
     assert [s.line for s in hits(text, "worth_noting")] == [3]

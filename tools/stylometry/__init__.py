@@ -9,6 +9,7 @@ aid: a score is a prompt to reread your own text, not a verdict about anyone.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
@@ -122,9 +123,23 @@ def split_lines(text: str) -> list[str]:
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def clean(snippet: str) -> str:
+    """One printable line of at most 100 characters.
+
+    Snippets are copied from files nobody vetted and end up in a terminal, so C0/C1 control
+    characters (ESC, BEL, ...) are replaced: an escape sequence must never survive into a report.
+    """
+    return " ".join(_CONTROL.sub(" ", snippet).split())[:100]
+
+
 def metric(name: str, value: float, severity: str | None, snippet: str) -> list[Signal]:
     """A document-level signal (no line); empty when the metric is below every threshold."""
-    return [] if severity is None else [Signal(name, round(value, 3), severity, None, snippet)]
+    if severity is None:
+        return []
+    return [Signal(name, round(value, 3), severity, None, clean(snippet))]
 
 
 def by_count(
@@ -152,7 +167,9 @@ def occurrences(name: str, hits: Sequence[Hit], severity: str | None) -> list[Si
     first ``MAX_OCCURRENCES`` are kept; ``value`` still carries the real total."""
     if severity is None:
         return []
-    return [Signal(name, len(hits), severity, h.line, h.snippet) for h in hits[:MAX_OCCURRENCES]]
+    return [
+        Signal(name, len(hits), severity, h.line, clean(h.snippet)) for h in hits[:MAX_OCCURRENCES]
+    ]
 
 
 def score_signals(signals: Iterable[Signal]) -> float:

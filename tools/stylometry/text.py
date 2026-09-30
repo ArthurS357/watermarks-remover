@@ -2,14 +2,15 @@
 
 Input is markdown-ish text (also what the loaders extract from HTML, DOCX and PDF). Fenced code
 and front matter are blanked before analysis, which keeps line numbers aligned with the original
-file. Every pattern is bounded (no open-ended quantifier nested in another), so a hostile 1 MB
-blob costs one scan, not a stall.
+file. Cost is linear in the input size: the patterns are anchored or bounded and a block's joined
+text is computed once, which the tests check against adversarial blobs (see the perf tests).
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import cached_property
 from statistics import mean, pstdev
 
 from . import (
@@ -19,12 +20,16 @@ from . import (
     Signal,
     by_below,
     by_count,
+    clean,
     metric,
     occurrences,
     score_signals,
     split_lines,
 )
 
+MAX_BLOCKS = 50_000
+
+_FRONT_KEY = re.compile(r"^[\w.-]+\s*:")
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
 _LIST = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
@@ -39,20 +44,24 @@ class Block:
     start: int  # 1-based line of the first line
     lines: tuple[str, ...]
 
-    @property
+    @cached_property
     def text(self) -> str:
         return "\n".join(self.lines)
 
-    @property
+    @cached_property
     def flat(self) -> str:
         return " ".join(line.strip() for line in self.lines)
 
 
 def _mask(lines: list[str]) -> list[str]:
-    """Blank front matter and fenced code so they never match, without shifting line numbers."""
+    """Blank front matter and fenced code so they never match, without shifting line numbers.
+
+    Front matter is only a leading ``---`` whose next line is a ``key:`` line; a horizontal rule
+    at the top of a document must not swallow everything up to the next one.
+    """
     out = list(lines)
     start = 0
-    if out and out[0].strip() == "---":
+    if len(out) > 1 and out[0].strip() == "---" and _FRONT_KEY.match(out[1]):
         end = next(
             (i for i in range(1, min(len(out), 200)) if out[i].strip() in ("---", "...")), None
         )
@@ -234,7 +243,7 @@ def _declarative_close(blocks: list[Block]) -> list[Signal]:
             len(found),
             "medium" if h.line >= closing else "low",
             h.line,
-            h.snippet,
+            clean(h.snippet),
         )
         for h in found[:MAX_OCCURRENCES]
     ]
@@ -402,6 +411,10 @@ def _ttr(words: list[str]) -> list[Signal]:
 
 def analyze(text: str) -> Analysis:
     blocks = _blocks(_mask(split_lines(text)))
+    notes: tuple[str, ...] = ()
+    if len(blocks) > MAX_BLOCKS:  # linear cost, but ~30 µs per block: bound the worst case
+        blocks = blocks[:MAX_BLOCKS]
+        notes = (f"texto muito longo: só os primeiros {MAX_BLOCKS} blocos foram analisados",)
     texty = [b for b in blocks if b.kind in _TEXTY]
     words = [w for b in texty for w in _words(b.text)]
     signals = [
@@ -418,4 +431,4 @@ def analyze(text: str) -> Analysis:
     ]
     signals.sort(key=lambda s: (s.line is None, s.line or 0, s.name))
     confidence = "low" if len(words) < 150 else "medium" if len(words) < 600 else "high"
-    return Analysis(signals, score_signals(signals), confidence)
+    return Analysis(signals, score_signals(signals), confidence, notes)

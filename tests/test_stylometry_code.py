@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import textwrap
 import time
+import warnings
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,8 @@ def src(text: str) -> str:
 
 
 def analyze(source, language="python", ctx=None, engine=False):
+    # The library default is quiet for context-dependent signals; most cases here want them on.
+    ctx = ctx or sc.Context(small_project=True)
     return sc.analyze(source, language, ctx, use_tree_sitter=engine)
 
 
@@ -369,6 +372,99 @@ def test_missing_tree_sitter_degrades_to_regex(monkeypatch):
     finally:
         monkeypatch.undo()
         sc._parser.cache_clear()
+
+
+# --- regressions from the hostile-input review (each one was reproduced before the fix) ----------
+
+
+def timed(fn, *args, **kwargs):
+    start = time.perf_counter()
+    result = fn(*args, **kwargs)
+    return result, time.perf_counter() - start
+
+
+def test_library_default_context_is_quiet():
+    source = "def handle_user_authentication_request():\n    pass\n"
+    assert "over_descriptive_name" not in {s.name for s in sc.analyze(source, "python").signals}
+
+
+def test_wall_of_comments_is_linear():
+    # 8000 consecutive "obvious" comments took 12 s when every one rescanned the ones after it.
+    _, seconds = timed(analyze, "#get\n" * 8000)
+    assert seconds < 3
+
+
+@pytest.mark.parametrize(
+    ("language", "blob", "engine"),
+    [
+        ("typescript", "a$" * 10_000, False),  # _CHAIN: 5.7 s at this size before the fix
+        ("typescript", "1." * 25_000, False),  # _LITERAL digits: 7 s
+        ("python", "# " + "TODO(" * 10_000 + "\n", False),  # _TODO_SHAPED: 4 s
+    ],
+    ids=["chain", "literal", "todo"],
+)
+def test_quadratic_regexes_stay_linear(language, blob, engine):
+    _, seconds = timed(analyze, blob, language, engine=engine)
+    assert seconds < 3
+
+
+def test_deep_annotation_on_a_valid_file_does_not_raise():
+    source = "def f():\n    x: a" + ".a" * 600 + " = 1\n"  # ast.unparse recursed on this
+    analysis = analyze(source)
+    assert "type_hint_on_trivial_local" in {s.name for s in analysis.signals}
+    assert len(next(s for s in analysis.signals if s.snippet).snippet) <= 100
+
+
+def test_recursion_error_after_a_good_parse_keeps_the_comment_signals(monkeypatch):
+    def too_deep(*args):
+        raise RecursionError
+
+    monkeypatch.setattr(sc, "_obvious", too_deep)
+    analysis = analyze("# Note: the list is sorted\nx = 1\n")
+    assert {s.name for s in analysis.signals} == {"warning_comment"}
+    assert any("RecursionError" in n for n in analysis.notes)
+
+
+def test_huge_python_skips_the_ast_but_keeps_comment_signals():
+    source = "x = [" + "1," * 300_000 + "]\n# Note: the list is sorted\n"
+    analysis, seconds = timed(analyze, source)
+    assert {s.name for s in analysis.signals} == {"warning_comment"}
+    assert any("AST" in n for n in analysis.notes)
+    assert analysis.confidence == "low"
+    assert seconds < 5
+
+
+def test_valid_code_with_invalid_escapes_does_not_warn():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analyze("pattern = '\\d+'\n")
+    assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]
+
+
+def test_directive_prefixes_do_not_swallow_real_comments():
+    code = "".join(f"x{i} = {i}\n" for i in range(40))
+    assert "comment_density" in names(code + "# Pragmatic choice: keep it\n" * 10)
+    assert "comment_density" in names(code + "# type: the kind of thing we store\n" * 10)
+    assert "comment_density" not in names(code + "# pragma: no cover\n" * 10)
+    assert "comment_density" not in names(code + "# type: ignore\n" * 10)
+
+
+def test_obvious_comment_ignores_long_and_explanatory_comments():
+    for comment in (
+        "# Set to 0 because the vendor API rejects None since v2.3",
+        "# Return early: nothing to do here",
+        "# Import inside the function (see #412)",
+        "# Initialize the counter before the long loop starts running",
+    ):
+        assert "obvious_comment" not in names(f"{comment}\nx = 0\n"), comment
+
+
+def test_snippets_never_carry_control_characters():
+    analysis = analyze("# Note: \x1b]0;pwned\x07\x1b[2J clear the screen\nx = 1\n")
+    assert analysis.signals
+    assert all(
+        not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in s.snippet) for s in analysis.signals
+    )
 
 
 def test_python_fixtures_score_apart():
