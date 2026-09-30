@@ -22,6 +22,25 @@ from image_meta import run_markdiffusion_purify
 
 HARNESS_SCRIPT = SCRIPTS / "markdiffusion_harness.py"
 
+
+def _is_fake_upstream_module(name: str) -> bool:
+    return name == "PIL" or name.startswith(("PIL.", "markdiffusion"))
+
+
+@pytest.fixture(autouse=True)
+def _forget_the_fake_upstream():
+    """The in-process ``_cmd_*`` tests put the fake upstream on ``sys.path`` and import its fake
+    ``PIL`` and ``markdiffusion``. Left in ``sys.modules``, a ``PIL`` without ``__version__`` breaks
+    the first later ``import pypdf`` in the same pytest process (pypdf reads ``PIL.__version__``)."""
+    path = list(sys.path)
+    before = {n: m for n, m in sys.modules.items() if _is_fake_upstream_module(n)}
+    yield
+    sys.path[:] = path
+    for name in [n for n in sys.modules if _is_fake_upstream_module(n)]:
+        del sys.modules[name]
+    sys.modules.update(before)  # a real Pillow imported earlier stays
+
+
 FAKE_PIL = """\
 class Image:
     def __init__(self, mode="RGB", size=(10, 20)):
