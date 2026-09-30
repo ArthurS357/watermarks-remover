@@ -2,6 +2,10 @@
 
 ## Rodada R11 — 2026-09-30 — Naturalização e integração via skill
 
+Concluída em 2026-09-30. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-09-30-r11). O plano
+abaixo é o que foi escrito antes de qualquer edição (66449e8); o que mudou na execução está em
+"Ajustes durante a execução", no fim desta seção.
+
 Duas entregas. **Eixo A:** `tools/naturalize.py`, um humanizador determinístico que ataca os
 sinais dominantes da R10 e **reduz** o score medido pelo mesmo `text.analyze` que o
 `measure_skill_effectiveness` usa. **Eixo B:** as skills `naturalize` e `detect-ai-patterns`, cujo
@@ -135,6 +139,22 @@ bloco: teste vermelho, implementação, verde, `ruff`, suíte completa.
 | R11-07 | `ls ~/.claude/skills/` mostra `naturalize` e `detect-ai-patterns`; cópia feita pelo `install_skill.py` |
 | R11-08 | Seção atualizada, exemplo vindo de execução real |
 | R11-09 | **delta ≤ −0.10** (efetividade medium ou high). Entre −0.10 e 0, marginal. Acima de 0, não fecha |
+
+### Ajustes durante a execução
+
+O plano acima não foi reescrito: estas são as diferenças entre ele e o que saiu.
+
+| # | Plano | Execução | Motivo e commit |
+|---|---|---|---|
+| K1 | Cópia do dogfooding em `docs/DONE.md.naturalized`, "fora do git" | Cópia no scratchpad, chamada `DONE.naturalized.md` | `docs/` está na allowlist do `.gitignore`, então o arquivo seria commitável. E a extensão `.naturalized` não é lida pelo detector nem pelo compare: `measure_skill_effectiveness.py` saiu com "nenhum arquivo pareado" (exit 2) |
+| K2 | Máscara de linha: código cercado, front matter, tabela, citação em bloco | Também código indentado (4 espaços ou tab), título setext, linha com `\|` sem pipe inicial, e aspa ou crase aberta que continua na linha seguinte | Sondagem própria (código indentado e setext) e revisão do `python-reviewer` (as outras). Um teste por caso. 93f5736 |
+| K3 | `naturalize` com 8 transformações do prompt | Mais proteções nas próprias regras: intervalo numérico com espaço (`10 — 20`, `9h — 17h`), aspas simples, `to` fora dos lead-ins de `dive`, nomes de ferramenta em minúscula, linha de hard-wrap não abre frase | Revisão do `python-reviewer`, cada achado reproduzido antes de corrigir. 93f5736 |
+| K4 | Âncora de título protegida quando o mesmo arquivo a referencia | Também título repetido (`slug-1`), link com percent-encoding, título setext, e título novo que tomaria o slug de um título existente | Revisão do `python-reviewer`. 93f5736 |
+| K5 | `difflib` para o diff | Diff por número de linha, construído só quando é mostrado | `difflib` é quadrático: arquivo de 55 mil linhas levou cerca de 9 minutos. O motor nunca soma nem tira linha. 59c088a |
+| K6 | `--output` protegido por caminho resolvido; escrita direta | `os.path.samefile`, escrita atômica, `fsync`, recusa de arquivo alterado depois de lido, saneamento de bidi e de sequências de controle no terminal | Revisão: um hard link passava pelo guard e o original era trocado pelo relatório. 59c088a |
+| K7 | Um só arquivo de teste do motor | `test_naturalize.py`, `test_naturalize_review.py` e `naturalize_support.py` | O arquivo passou de 800 linhas. ed7f908 e o commit do split |
+| K8 | `assert` para a invariante do marcador | `raise RuntimeError` | `bandit` B101 (a R10 fechou com 0 em `tools/`). Ramo coberto por teste que força o vazamento |
+| K9 | Teste de entrada hostil: 13 casos na primeira versão | 18 no commit do motor, 23 no final | O teste achou o primeiro backtrack quadrático (`[A-Z]{2,}[A-Z0-9]*`, 195 s para 100 kB) antes de qualquer commit, e mais dois do mesmo tipo em auditoria. O revisor achou as aspas curly e o `difflib` |
 
 ## Rodada R10 — 2026-09-30 — Detecção estilométrica e medição de efetividade
 

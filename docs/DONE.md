@@ -2,6 +2,135 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Estado do sistema — 2026-09-30 (R11)
+
+| ID | Item | Estado | Commit |
+|---|---|---|---|
+| R11-01 | Motor `tools/stylometry/naturalize.py` | ✅ fechado | fa620eb, 93f5736, d9d7a75 |
+| R11-02 | CLI `tools/naturalize.py` | ✅ fechado | e7201d8, 59c088a, 370cb6f |
+| R11-03 | Fixtures de naturalização (11 casos, pares `before.md`/`after.md`) | ✅ fechado | fa620eb |
+| R11-04 | Skill `naturalize` | ✅ fechado | 28b5547, ed7f908 |
+| R11-05 | Skill `detect-ai-patterns` | ✅ fechado | 568f57c |
+| R11-06 | Seção nova em `clean-user-facing-text` (8 linhas, nenhuma removida) | ✅ fechado | 8ef6adb |
+| R11-07 | Sync para `~/.claude/skills/` (`install_skill.py --skill`) | ✅ fechado para as duas skills novas. `clean-user-facing-text` **não** sincronizada, ver B3 | d5893ae |
+| R11-08 | README, seção "Detecção estilométrica" | ✅ fechado | 6218cc9, ed7f908 |
+| R11-09 | Dogfooding | ✅ fechado, **delta −0,1728** (medium) | este commit |
+
+| Medida | Valor final (HEAD `d9d7a75`) |
+|---|---|
+| Testes, `.venv` sem o grupo `formats` | 1790 coletados / 1720 passed / 70 skipped, 0 falhas, exit 0 |
+| Testes, venv com `formats` | 1790 coletados / 1782 passed / 8 skipped, 0 falhas, exit 0 |
+| Os 1262 de antes | Os 1192 passed e os 70 skips seguem iguais sem `formats`; os 1254 e os 8 com `formats`. +528 testes, 0 regressões |
+| Cobertura de ramo (`--cov=tools`) | Motor `tools/stylometry/naturalize.py` 100% (301 instruções, 96 ramos). CLI `tools/naturalize.py` 99%, só falta o `sys.exit(main())`, que roda no teste de subprocess |
+| `ruff check .` e `ruff format --check .` | limpos (126 arquivos) |
+| `mypy --strict` em `tools/` | limpo, 9 arquivos |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades |
+| Bandit | `-r tools/ install_skill.py` e as duas skills novas: 0 achados. `-r service/scripts/` segue em Low 32 / Medium 1 / High 0 |
+| `vulture` (60%) e `pylint` duplicate-code | 0 achados nos dois módulos novos; duplicação 10/10 em `tools/` |
+| `service/` e `skills/remove-ai-marks/` | Sem diff desde o baseline `fb03416` |
+
+**R11 pronta para uso: sim.** `tools/naturalize.py` roda de qualquer diretório com a stdlib (não precisa do grupo `formats`), reduz o score de forma medida e é idempotente. As duas skills estão em `~/.claude/skills/` e aparecem na lista desta sessão. Nenhum `git push` foi feito.
+
+Riscos residuais que não bloqueiam uso:
+- Medição n = 1. O delta de −0,1728 é sobre o `docs/DONE.md` e vem de tirar o negrito de 23 rótulos (formatação), não de o texto ter ficado melhor. O score mede o que o detector conta. Limiares, pesos e o divisor 8 seguem sem calibração contra corpus.
+- Links de outros arquivos para um título renomeado não são vistos. A ferramenta protege os links do próprio arquivo. Por isso o fluxo das skills manda revisar o `--diff-only` antes de gravar.
+- Limites conhecidos do motor, todos documentados na skill: código indentado dentro de item de lista, aspas curly aninhadas (só o par de dentro é protegido), `segunda — sexta` (sem número) vira lista, linha de hard-wrap não abre frase, e nome de ferramenta em minúscula fora de uma lista curta é capitalizado.
+- Primeiro run da CI pendente. Nada foi pushado. Os testes novos passam no Windows (hard link incluído); a CI vai exercitá-los no Linux e no macOS pela primeira vez.
+- `clean-user-facing-text` instalada em `~/.claude/skills/` está defasada do repo: os `scripts/` são de 22/08 e 07/09, os do repo de 16 e 21/09. A seção nova da R11-06 só existe na cópia do repo até alguém reinstalar. Reinstalar troca os scripts da skill instalada, por isso não foi feito sem pedido. Com `--force` o instalador cria uma pasta `.backup.*` com outro `SKILL.md` dentro de `skills/`; tire-a dali.
+- Três observações sobre código da R10, não corrigidas por estarem fora do escopo: o `text._mask` fecha uma cerca com qualquer trecho do mesmo caractere (o que o motor corrigiu para si), então o detector conta como prosa o conteúdo de uma cerca dentro de outra; e `detect_ai_patterns.py --output` e `measure_skill_effectiveness.py --output` comparam caminhos resolvidos, então um hard link para a entrada passa pela guarda.
+- O mutation testing não roda no Windows (R6). A qualidade dos testes foi medida por cobertura de ramo, 150 documentos aleatórios com semente fixa e 23 entradas hostis.
+
+## Rodada R11 — 2026-09-30 — Naturalização e integração via skill
+
+| Medida | Início (`fb03416`) | Fim (`d9d7a75`) |
+|---|---|---|
+| Testes coletados / passed / skipped, sem `formats` | 1262 / 1192 / 70 | 1790 / 1720 / 70 |
+| Testes coletados / passed / skipped, com `formats` | 1262 / 1254 / 8 | 1790 / 1782 / 8 |
+| `ruff check .` e `ruff format --check .` | limpos (117 arquivos) | limpos (126 arquivos) |
+| `pip-audit` (`.venv`) | 0 | 0 |
+
+O plano foi escrito antes de qualquer edição, em 66449e8 (`docs/TODO.md`). As diferenças entre ele e o que saiu estão em "Ajustes durante a execução" (K1 a K9), no mesmo arquivo, e os oito achados da FASE 0 que mudaram premissas do prompt estão em B1 a B8.
+
+### O que saiu
+
+- `tools/stylometry/naturalize.py`: o motor. Oito reescritas determinísticas (`bold_lead_in`, `em_dash_density`, `template_heading`, `emoji_heading`, `hedge_double`, `delve_family`, `worth_noting`, `fast_paced_world`), cada uma só enquanto o detector da R10 ainda dispara o sinal dela. Antes de transformar, tudo o que pode carregar um fato vira marcador opaco e volta idêntico: linhas de cerca, código indentado, front matter, tabela, citação em bloco, título setext; e, dentro da linha, código inline, destino de link, URL, e-mail, caminho, citação entre aspas, tag HTML, hash e identificador. O laço repete até o texto parar de mudar, então rodar sobre a própria saída não muda nada.
+- `tools/naturalize.py`: o CLI. `--format text|md|json`, `--diff-only`, `--in-place` (escrita atômica que mantém BOM, fim de linha e permissão), `--signals`, `--preserve`, `--output`. Exit 0 mudou algo, 1 caminho ou escrita, 2 formato não suportado, 3 nada aplicável. O score é o de `detect_ai_patterns.py`, e um teste confirma que o `delta` bate com o do `measure_skill_effectiveness.py` para o mesmo par.
+- `skills/naturalize/` e `skills/detect-ai-patterns/`: o corpo de cada uma é também a documentação (o que a ferramenta faz, onde está o CLI, fluxo, como ler o resultado, limites, um exemplo real). Achar o repositório: `WATERMARKS_REPO` e, sem ela, `E:\Projetos\Scripts\watermarks-remover`. Conferido de `C:\` no PowerShell e no Git Bash, com a variável certa, errada e ausente.
+- `install_skill.py --skill NOME` (padrão inalterado), para o R11-07 não depender de cópia manual.
+- Testes: `test_naturalize.py`, `test_naturalize_review.py`, `naturalize_support.py`, `test_naturalize_cli.py`, `test_naturalize_skills.py` e dois casos novos em `test_lightweight_skill.py`. Este último grupo mantém a prosa das skills honesta: toda flag citada existe, toda flag que existe é citada, a tabela de transformações lista exatamente as do motor, o catálogo lista os 37 sinais, nenhum arquivo de skill é engolido pelo `.gitignore`, e o instalador entrega as duas.
+
+### Registros pedidos
+
+- `.gitignore` deny-by-default mordeu de novo, pela quarta vez no total (B1): `skills/naturalize/SKILL.md` nasceria ignorado. Liberado em 28b5547, e `test_git_does_not_ignore_a_skill_folder` passa a cobrir todo arquivo sob `skills/`.
+- Três desvios do prompt, declarados antes de editar (B6, B7, B8): o CLI aceita só `.md` e `.txt` (não há como reescrever HTML, DOCX ou PDF de volta de forma determinística), `hedge_double` mantém um hedge em vez de tirar os dois (tirar os dois transformaria dúvida em certeza), e o título de modelo é trocado no idioma do título.
+- Extensão do arquivo de dogfooding (K1): o nome `docs/DONE.md.naturalized` do prompt não é lido pelo detector nem pelo compare (`nenhum arquivo pareado`, exit 2), e `docs/` não é ignorado pelo git. A cópia ficou no scratchpad, como `DONE.naturalized.md`.
+- Um achado de eficácia no dogfooding: o rótulo `**RED no código antigo...:**` não era reescrito porque `RED` vira marcador de identificador e a checagem de maiúscula olhava o marcador. Corrigido em d9d7a75 (23 de 23 rótulos do `DONE.md` agora).
+- Entrada hostil: o primeiro teste de desempenho achou um backtrack quadrático em `[A-Z]{2,}[A-Z0-9]*` (195 s para 100 kB) antes de qualquer commit. A auditoria seguinte achou mais dois do mesmo tipo (`.*?` antes de `[ \t]*$` num título, e `re.sub` de pontuação final).
+
+### Revisões
+
+`python-review` sobre o motor e o CLI (agente `python-reviewer`): **5 ALTA e 6 MÉDIA**, mais duas recomendações. Cada achado foi reproduzido antes de corrigir, e cada correção tem teste de regressão.
+
+| # | Achado | Estado |
+|---|---|---|
+| 1 ALTA | `difflib` quadrático, rodando em todos os modos (arquivo de 55 mil linhas: cerca de 9 minutos) | Corrigido, 59c088a: diff por número de linha, só quando é mostrado |
+| 2 ALTA | Máscara de aspas curly e guillemet quadrática (20 mil aberturas: 3 s) | Corrigido, 93f5736 |
+| 3 ALTA | `KeyError` com `ı` e `ſ` sob `IGNORECASE` (traceback, exit 1) | Corrigido: padrões de `delve`/`dive` só ASCII |
+| 4 ALTA | Cerca fechada por qualquer trecho do mesmo caractere vazava o bloco | Corrigido: o fechamento exige o tamanho do abridor e nenhuma info string |
+| 5 ALTA | Intervalo numérico com espaço (`10 — 20`, `9h — 17h`) virava lista | Corrigido. `segunda — sexta`, sem número, continua virando lista, documentado |
+| 6 MÉDIA | Literal entre aspas simples alterado | Corrigido, com apóstrofo tratado à parte |
+| 7 MÉDIA | `--output` com hard link para a entrada trocava o original pelo relatório | Corrigido: `os.path.samefile` e escrita atômica |
+| 8 MÉDIA | Âncora incompleta: título repetido, link com percent-encoding, colisão de slug | Corrigido |
+| 9 MÉDIA | Citação e código quebrados em duas linhas, e tabela sem pipe inicial, reescritos | Corrigido |
+| 10 MÉDIA | Capitalização e sentido: `pip` virava `Pip`, início de linha de hard-wrap virava início de frase, `to dive into the lake` virava figura | Corrigido |
+| 11 MÉDIA | Sequência de controle e bidi (U+202E) chegando ao terminal | Corrigido. Com saída para um pipe os bytes seguem exatos, de propósito |
+| Rec. | `fsync` antes do `os.replace`; arquivo alterado entre a leitura e a escrita | Feitas |
+
+`code-reviewer` sobre o diff acumulado (`fb03416..370cb6f`): feita por mim pelo roteiro da skill (intenção, estrutura, detalhes, testes, veredito), junto do agente acima. Zero crítico. Três achados menores, corrigidos: `main()` com 52 linhas (passou para 40, 370cb6f), `test_naturalize.py` com 833 linhas (separado em três arquivos) e a ajuda do `--force` do instalador ainda falando só de Cursor. Não houve um segundo revisor independente além do `python-reviewer`. Veredito: Approve.
+
+### Dogfooding (FASE 4)
+
+Fluxo do prompt contra o próprio `docs/DONE.md`, medido no HEAD `d9d7a75` e antes desta seção:
+
+1. `detect_ai_patterns.py docs/DONE.md --format md`: score 0,39, com `bold_lead_in` 23 (high), `comparison_table_symmetry` (medium) e `template_heading` 1 (low).
+2. `naturalize.py docs/DONE.md --diff-only --format md`: 23 edições, todas `bold_lead_in`. Li o diff inteiro: só desnegrito de rótulos. Hashes, pins, código inline e o negrito que não abre item (`**nenhuma via make ainda.**`) ficaram como estavam.
+3. Cópia fora do git (`DONE.naturalized.md`, no scratchpad).
+4. `measure_skill_effectiveness.py`:
+
+| | Antes | Depois |
+|---|---|---|
+| Score | 0,3920 | 0,2192 |
+| Delta | | **−0,1728** |
+| Efetividade | | **medium** (confiança high) |
+| Eliminado | | `bold_lead_in` |
+| Restantes | | `comparison_table_symmetry` (medium), `template_heading` (low) |
+| Introduzido | | nenhum |
+
+Critério de sucesso do prompt (delta ≤ −0,10): **atingido**. A cópia é idempotente (rodar de novo dá exit 3). Antes e depois são idênticos em 572 trechos de código inline, 84 hashes, 938 números e 9 URLs, e as duas têm 470 linhas.
+
+Por que não foi mais longe: `comparison_table_symmetry` é tabela, que o motor protege de propósito (é dado), e `### O que saiu` é um título que o detector conta mas o dicionário de templates não conhece (trocá-lo seria inventar um título). O travessão não entrou na conta: nenhum sinal de travessão dispara neste arquivo, então o gate da reescrita de travessão ficou fechado.
+
+Para comparar com a R10: a medição do `/clean-user-facing-text` foi de +0,0132 (piorou) sobre uma versão anterior do arquivo (score 0,3531). Esta é sobre a versão atual (0,3920), então os dois deltas não são do mesmo arquivo. Com a mesma ferramenta no `docs/TODO.md` o delta foi −0,2399 (medium), e no `README.md` −0,0519 (low). Todos são n = 1 e mudam só a formatação.
+
+### Skills invocadas (para cruzar com o transcript)
+
+As 9 não-condicionais foram chamadas numa única mensagem, com os nomes qualificados (`ponytail:ponytail-review`, `ponytail:ponytail-debt`), e nenhuma falhou.
+
+| # | Skill | Fase | Propósito |
+|---|---|---|---|
+| 1 | `ponytail:ponytail-review` | 0 | Gate. Régua de over-engineering; passada própria sobre o diff: nada a cortar além do já simplificado |
+| 2 | `ponytail:ponytail-debt` | 0 | Gate. `grep` de `ponytail:` em `tools/`, `tests/`, `install_skill.py` e `skills/`: 0 marcadores |
+| 3 | `python-pro` | 0 | Gate. Python 3.12+ (alvo `py312`), tipagem completa, `mypy --strict` |
+| 4 | `py-test-quality` | 0 | Gate. Cobertura de ramo: 100% e 99%. Sem mutation testing no Windows, então teste aleatório e entrada hostil |
+| 5 | `py-security` | 0 | Gate. Entrada hostil, `bandit`, `pip-audit`; foi o que achou os backtracks quadráticos |
+| 6 | `py-code-health` | 0 | Gate. `vulture` e `pylint` duplicate-code nos módulos novos |
+| 7 | `py-typing` | 0 | Gate. `mypy --strict` nos 9 arquivos de `tools/` |
+| 8 | `caveman` | 0 | Gate. Estilo de saída no chat |
+| 9 | `python-test` | 0 | Gate. Baseline 1262 / 1192 / 70 e leitura das execuções, com e sem `formats` |
+| 10 | `python-review` (condicional) | 2 | Gatilho: CLI que lê e escreve arquivo. Invocada assim que o CLI existiu, antes dos commits. Delegou ao `python-reviewer` |
+| 11 | `code-reviewer` (condicional) | 2 | Mesmo gatilho, invocada junto, sem esperar a retomada (na R10 foi omitida até lá). Revisão do diff acumulado, descrita acima |
+| — | `python-type` (condicional) | — | **Não invocado.** O `mypy --strict` passou sem erro, então não havia erro de tipo para resolver |
+
 ## Estado do sistema — 2026-09-30
 
 | ID | Item | Estado | Commit |
