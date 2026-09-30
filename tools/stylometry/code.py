@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import functools
 import importlib
+import importlib.util
 import io
 import re
 import tokenize
@@ -26,6 +27,7 @@ from . import (
     Signal,
     by_count,
     cap_confidence,
+    isolate,
     metric,
     occurrences,
     score_signals,
@@ -34,6 +36,7 @@ from . import (
 
 PYTHON = "python"
 TS_LANGUAGES = ("typescript", "tsx", "javascript", "jsx")
+TS_TIMEOUT = 10.0  # seconds the tree-sitter worker gets for one file before it is killed
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
@@ -470,33 +473,39 @@ def _jsdoc(source: str, typed: bool) -> list[Signal]:
     return occurrences("jsdoc_on_trivial_type", found, by_count(len(found), 1, 3, 6))
 
 
-@functools.cache
-def _parser(language: str) -> Any | None:
-    try:
-        ts = importlib.import_module("tree_sitter")
-        grammars = importlib.import_module("tree_sitter_typescript")
-        grammar = (
-            grammars.language_typescript() if language == "typescript" else grammars.language_tsx()
-        )
-        return ts.Parser(ts.Language(grammar))
-    except (ImportError, AttributeError, TypeError, ValueError, OSError):
-        return None
-
-
 def tree_sitter_available() -> bool:
-    return _parser("tsx") is not None
+    """Both packages importable. Checked without importing them: the worker does the real load."""
+    return all(
+        importlib.util.find_spec(m) is not None for m in ("tree_sitter", "tree_sitter_typescript")
+    )
 
 
-def _node_hit(node: Any) -> Hit:
-    text = node.text.decode("utf-8", "replace")
-    return Hit(node.start_point[0] + 1, " ".join(text.split())[:100])
+# Everything from here to ``_ts_extract`` runs in the worker process (see ``isolate``): parsing
+# is the part that can hang or balloon on hostile input, so it never runs in the caller.
 
 
-def _const_literals(nodes: list[Any]) -> set[str]:
+@functools.cache
+def _parser(language: str) -> Any:
+    ts = importlib.import_module("tree_sitter")
+    grammars = importlib.import_module("tree_sitter_typescript")
+    grammar = (
+        grammars.language_typescript() if language == "typescript" else grammars.language_tsx()
+    )
+    return ts.Parser(ts.Language(grammar))
+
+
+def _node_hit(node: Any, data: bytes) -> list[Any]:
+    """``[line, snippet]``. Sliced from the bytes: ``node.text`` would copy a whole subtree."""
+    text = data[node.start_byte : node.start_byte + 400].decode("utf-8", "replace")
+    return [node.start_point[0] + 1, " ".join(text.split())[:100]]
+
+
+def _const_literals(nodes: list[Any], parents: dict[int, Any]) -> set[str]:
     """Names bound once to a literal: ``?.`` on them can never be nullish."""
     names: set[str] = set()
     for n in nodes:
-        if n.type != "variable_declarator" or n.parent is None:
+        parent = parents.get(n.id)
+        if n.type != "variable_declarator" or parent is None:
             continue
         name, value = n.child_by_field_name("name"), n.child_by_field_name("value")
         if (
@@ -504,8 +513,8 @@ def _const_literals(nodes: list[Any]) -> set[str]:
             and value is not None
             and name.type == "identifier"
             and value.type in _LITERAL_BASES
-            and n.parent.type == "lexical_declaration"
-            and n.parent.children[0].type == "const"
+            and parent.type == "lexical_declaration"
+            and parent.children[0].type == "const"
         ):
             names.add(name.text.decode("utf-8", "replace"))
     return names
@@ -515,13 +524,13 @@ def _chain_base(node: Any) -> Any:
     return node.child_by_field_name("object") or node.child_by_field_name("function")
 
 
-def _flagged_chains(nodes: list[Any]) -> list[Hit]:
-    consts = _const_literals(nodes)
+def _flagged_chains(nodes: list[Any], parents: dict[int, Any], data: bytes) -> list[list[Any]]:
+    consts = _const_literals(nodes, parents)
     chain_nodes = [n for n in nodes if n.type in _CHAIN_NODES]
     inner = {
         b.id for n in chain_nodes if (b := _chain_base(n)) is not None and b.type in _CHAIN_NODES
     }
-    found: list[Hit] = []
+    found: list[list[Any]] = []
     for n in chain_nodes:
         if n.id in inner:  # only the outermost node of a chain speaks for it
             continue
@@ -534,50 +543,78 @@ def _flagged_chains(nodes: list[Any]) -> list[Hit]:
             or (base.type == "identifier" and base.text.decode("utf-8", "replace") in consts)
         )
         if links >= 3 or (links >= 1 and trivial):
-            found.append(_node_hit(n))
+            found.append(_node_hit(n, data))
     return found
 
 
-def _ts_tree(parser: Any, source: str) -> list[Signal]:
+def _is_inline_arrow_with_primitive_return(n: Any, parent: Any | None) -> bool:
+    if n.type != "arrow_function" or parent is None:
+        return False
+    if parent.type not in ("arguments", "jsx_expression"):
+        return False
+    ret = next((c for c in n.children if c.type == "type_annotation"), None)
+    return (
+        ret is not None
+        and ret.text.decode("utf-8", "replace").lstrip(": ").strip() in _PRIMITIVE_TYPES
+    )
+
+
+def _ts_extract(language: str, source: str) -> dict[str, list[list[Any]]]:
+    """Worker entry point: parse and report ``[line, snippet]`` hits per signal (JSON-safe)."""
+    data = source.encode("utf-8")
     nodes: list[Any] = []
-    stack = [parser.parse(source.encode("utf-8")).root_node]
+    parents: dict[int, Any] = {}  # Node.parent is O(depth): quadratic on deeply nested code
+    stack = [_parser(language).parse(data).root_node]
     while stack:
         node = stack.pop()
         nodes.append(node)
-        stack.extend(node.children)
-    as_const = [
-        _node_hit(n)
-        for n in nodes
-        if n.type == "as_expression"
-        and len(n.children) >= 3
-        and n.children[-1].type == "const"
-        and n.children[0].type in _PRIMITIVE_LITERALS
-    ]
-    arrows = []
-    for n in nodes:
-        if n.type == "arrow_function" and n.parent is not None:
-            if n.parent.type not in ("arguments", "jsx_expression"):
-                continue
-            ret = next((c for c in n.children if c.type == "type_annotation"), None)
-            if (
-                ret is not None
-                and ret.text.decode("utf-8", "replace").lstrip(": ").strip() in _PRIMITIVE_TYPES
-            ):
-                arrows.append(_node_hit(n))
-    return _ts_signals(as_const, _flagged_chains(nodes), arrows)
+        for child in node.children:
+            parents[child.id] = node
+            stack.append(child)
+    return {
+        "as_const": [
+            _node_hit(n, data)
+            for n in nodes
+            if n.type == "as_expression"
+            and len(n.children) >= 3
+            and n.children[-1].type == "const"
+            and n.children[0].type in _PRIMITIVE_LITERALS
+        ],
+        "chains": _flagged_chains(nodes, parents, data),
+        "arrows": [
+            _node_hit(n, data)
+            for n in nodes
+            if _is_inline_arrow_with_primitive_return(n, parents.get(n.id))
+        ],
+    }
+
+
+def _as_hits(pairs: list[list[Any]]) -> list[Hit]:
+    return [Hit(line, snippet) for line, snippet in pairs]
 
 
 def _typescript(
     source: str, lines: list[str], language: str, use_tree_sitter: bool
 ) -> tuple[list[Signal], list[str]]:
-    parser = _parser(language) if use_tree_sitter else None
-    if parser is None:
-        body, notes = (
-            _ts_regex(source),
-            ["tree-sitter indisponível; análise por regex (menos precisa)"],
-        )
+    body: list[Signal] | None = None
+    notes: list[str] = []
+    if not use_tree_sitter or not tree_sitter_available():
+        notes = ["tree-sitter indisponível; análise por regex (menos precisa)"]
     else:
-        body, notes = _ts_tree(parser, source), []
+        try:
+            found = isolate.call("stylometry.code:_ts_extract", [language, source], TS_TIMEOUT)
+        except TimeoutError:
+            notes = [
+                f"tree-sitter excedeu {TS_TIMEOUT:g} s neste arquivo; análise por regex (menos precisa)"
+            ]
+        except (RuntimeError, OSError) as exc:  # IsolatedError is a RuntimeError
+            notes = [f"tree-sitter falhou ({exc}); análise por regex (menos precisa)"]
+        else:
+            body = _ts_signals(
+                _as_hits(found["as_const"]), _as_hits(found["chains"]), _as_hits(found["arrows"])
+            )
+    if body is None:
+        body = _ts_regex(source)
     typed = language in ("typescript", "tsx")
     return [*body, *_jsdoc(source, typed), *_comment_signals(_ts_comments(lines))], notes
 

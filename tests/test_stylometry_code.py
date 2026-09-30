@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import json
 import sys
 import textwrap
 import time
@@ -40,6 +42,30 @@ TS_SIGNALS = {
     "warning_comment",
     "todo_comment_style",
 }
+
+
+def _in_process(target, args, timeout):
+    """Stand-in for ``isolate.call``: same JSON round trip, same target, no child process.
+
+    The real worker is exercised by the tests that ask for the ``real_worker`` fixture (and by
+    test_stylometry_isolate.py); everything else runs the worker's code here so that it is fast
+    and visible to coverage, which does not follow into a spawned process.
+    """
+    module, _, name = target.partition(":")
+    function = getattr(importlib.import_module(module), name)
+    return json.loads(json.dumps(function(*json.loads(json.dumps(args)))))
+
+
+@pytest.fixture
+def real_worker():
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _worker_code_in_process(request, monkeypatch):
+    if "real_worker" not in request.fixturenames:
+        monkeypatch.setattr(sc.isolate, "call", _in_process)
+
 
 needs_tree_sitter = pytest.mark.skipif(
     not sc.tree_sitter_available(), reason="tree-sitter not installed (pip install --group formats)"
@@ -360,18 +386,33 @@ def test_unsupported_language_is_rejected():
 
 
 def test_missing_tree_sitter_degrades_to_regex(monkeypatch):
-    def unavailable(name):
-        raise ImportError(name)
+    monkeypatch.setattr(sc.importlib.util, "find_spec", lambda name: None)
+    assert sc.tree_sitter_available() is False
+    analysis = sc.analyze("const a = 1;\n", "typescript")
+    assert any("indisponível" in n and "regex" in n for n in analysis.notes)
+    assert analysis.confidence == "low"
 
-    sc._parser.cache_clear()
-    monkeypatch.setattr(sc.importlib, "import_module", unavailable)
-    try:
-        assert sc.tree_sitter_available() is False
-        analysis = sc.analyze("const a = 1;\n", "typescript")
-        assert any("regex" in n for n in analysis.notes)
-    finally:
-        monkeypatch.undo()
-        sc._parser.cache_clear()
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (TimeoutError("excedeu 10 s"), "excedeu"),
+        (sc.isolate.IsolatedError("ImportError: No module named 'tree_sitter'"), "falhou"),
+        (OSError("pipe broke"), "falhou"),
+    ],
+    ids=["timeout", "worker-error", "os-error"],
+)
+def test_a_failing_worker_degrades_to_regex_with_the_reason(monkeypatch, failure, expected):
+    def boom(*args):
+        raise failure
+
+    monkeypatch.setattr(sc, "tree_sitter_available", lambda: True)
+    monkeypatch.setattr(sc.isolate, "call", boom)
+    source = 'const a = "x" as const;\nconst b = 1 as const;\nconst c = true as const;\n'
+    analysis = sc.analyze(source, "typescript")
+    assert any(expected in n and "regex" in n for n in analysis.notes)
+    assert "as_const_everywhere" in {s.name for s in analysis.signals}  # the regex path still ran
+    assert analysis.confidence == "low"
 
 
 # --- regressions from the hostile-input review (each one was reproduced before the fix) ----------
@@ -665,3 +706,51 @@ def test_ts_pathological_input_stays_fast(blob, engine):
     start = time.perf_counter()
     analyze(blob, "typescript", engine=engine)
     assert time.perf_counter() - start < 20
+
+
+# --- tree-sitter worker: the hang and the quadratic nesting found in review ------------------------
+
+# 21 bytes that send the TSX scanner into an infinite loop that never releases the GIL.
+TSX_HANG = "<>{:t.``<T>>[):d'a'x`"
+
+
+@needs_tree_sitter
+def test_a_tree_sitter_hang_is_killed_and_falls_back_to_regex(real_worker, monkeypatch):
+    monkeypatch.setattr(sc, "TS_TIMEOUT", 3.0)
+    analysis, seconds = timed(sc.analyze, TSX_HANG, "tsx")
+    assert any("excedeu" in n and "regex" in n for n in analysis.notes)
+    assert analysis.confidence == "low"
+    assert seconds < 20
+    # the worker was killed, and the next call gets a fresh one that works
+    ok = sc.analyze('const a = "x" as const;\n' * 3, "tsx")
+    assert ok.notes == ()
+    assert "as_const_everywhere" in {s.name for s in ok.signals}
+
+
+@needs_tree_sitter
+def test_the_real_worker_matches_the_in_process_result(real_worker):
+    source = (FIXTURES / "code_ai_like.tsx").read_text(encoding="utf-8")
+    via_worker = sc.analyze(source, "tsx")
+    via_regex = sc.analyze(source, "tsx", use_tree_sitter=False)
+    assert via_worker.notes == ()
+    assert {s.name for s in via_worker.signals} == {s.name for s in via_regex.signals}
+
+
+@needs_tree_sitter
+def test_deeply_nested_arrows_are_not_quadratic():
+    # Node.parent is O(depth): 4000 nested arrows took 11 s, and 8000 took 44 s.
+    depth = 4000
+    source = "f(" + "(a): void => f(" * depth + "1" + ")" * (depth + 1) + ";\n"
+    analysis, seconds = timed(sc.analyze, source, "tsx")
+    assert analysis.notes == ()
+    assert "explicit_return_types_on_arrow" in {s.name for s in analysis.signals}
+    assert seconds < 8
+
+
+@needs_tree_sitter
+def test_node_snippets_come_from_bytes_and_survive_multibyte_text():
+    source = 'const s = "ação" as const;\nconst t = "é" as const;\nconst u = "ü" as const;\n'
+    hits = sc._ts_extract("typescript", source)["as_const"]
+    by_line = dict(hits)  # the DFS order is an implementation detail; analyze() sorts by line
+    assert sorted(by_line) == [1, 2, 3]
+    assert by_line[1].startswith('"ação" as const')  # starts at the expression, not the line
