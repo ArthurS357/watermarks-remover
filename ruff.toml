@@ -2,6 +2,9 @@
 # Version pinned in requirements-dev.txt (exact pins, no drift).
 line-length = 100
 target-version = "py312"
+# Stylometry fixtures carry obvious comments, em dashes and a bare `except: pass` on purpose,
+# to exercise the detectors; linting or reformatting them would defeat the test data.
+extend-exclude = ["tests/fixtures/stylometry"]
 
 [lint]
 # E/F/W: pycodestyle + pyflakes core; I: import sorting; UP: pyupgrade;

@@ -110,6 +110,21 @@ class Analysis(NamedTuple):
     signals: list[Signal]
     score: float
     confidence: str
+    notes: tuple[str, ...] = ()  # caveats the reader should see: parse errors, fallbacks
+
+
+def split_lines(text: str) -> list[str]:
+    r"""Split on LF, CRLF and CR only, like Python's tokenizer and most editors.
+
+    ``str.splitlines`` also splits on U+2028, form feeds and friends, which would shift line
+    numbers in exactly the files this tool is about (invisible characters).
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def metric(name: str, value: float, severity: str | None, snippet: str) -> list[Signal]:
+    """A document-level signal (no line); empty when the metric is below every threshold."""
+    return [] if severity is None else [Signal(name, round(value, 3), severity, None, snippet)]
 
 
 def by_count(

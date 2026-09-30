@@ -313,6 +313,11 @@ def test_line_numbers_follow_the_original_file():
     assert "vale notar que sim" in signal.snippet
 
 
+def test_line_separator_characters_do_not_shift_line_numbers():
+    text = "um dois\x0ctres\n\nvale notar que sim.\n"
+    assert [s.line for s in hits(text, "worth_noting")] == [3]
+
+
 def test_fenced_code_and_front_matter_are_ignored_but_keep_numbering():
     text = "---\ntitle: vale notar\n---\n\n```\nvale notar\n```\n\nvale notar que sim.\n"
     assert [s.line for s in hits(text, "worth_noting")] == [9]

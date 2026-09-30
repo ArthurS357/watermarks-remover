@@ -12,7 +12,18 @@ import re
 from dataclasses import dataclass
 from statistics import mean, pstdev
 
-from . import MAX_OCCURRENCES, Analysis, Hit, Signal, by_below, by_count, occurrences, score_signals
+from . import (
+    MAX_OCCURRENCES,
+    Analysis,
+    Hit,
+    Signal,
+    by_below,
+    by_count,
+    metric,
+    occurrences,
+    score_signals,
+    split_lines,
+)
 
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
@@ -119,10 +130,6 @@ def _hits(blocks: list[Block], rx: re.Pattern[str], kinds: tuple[str, ...] = _TE
             found.append(Hit(line, _snip(text, m), base + m.start()))
         base += len(text) + 1
     return found
-
-
-def _metric(name: str, value: float, severity: str | None, snippet: str) -> list[Signal]:
-    return [] if severity is None else [Signal(name, round(value, 3), severity, None, snippet)]
 
 
 def _rx(*patterns: str) -> re.Pattern[str]:
@@ -334,14 +341,14 @@ def _cadence(blocks: list[Block]) -> list[Signal]:
     out: list[Signal] = []
     if len(prose) >= 5:
         sd = pstdev([len(p) for p in per_paragraph])
-        out += _metric(
+        out += metric(
             "paragraph_uniformity",
             sd,
             by_below(sd, medium=0.5, high=0.25),
             f"{len(prose)} parágrafos, desvio de {sd:.2f} frases",
         )
         sd = pstdev([len(_words(b.flat)) for b in prose])
-        out += _metric(
+        out += metric(
             "paragraph_length_stddev",
             sd,
             by_below(sd, low=12, medium=8, high=4),
@@ -350,9 +357,9 @@ def _cadence(blocks: list[Block]) -> list[Signal]:
     if len(sentences) >= 8:
         sd = pstdev([len(_words(s)) for s in sentences])
         detail = f"{len(sentences)} frases, desvio de {sd:.2f} palavras"
-        out += _metric("sentence_uniformity", sd, by_below(sd, medium=5, high=3), detail)
+        out += metric("sentence_uniformity", sd, by_below(sd, medium=5, high=3), detail)
         # Band just above the structural threshold, so one quantity is not counted twice.
-        out += _metric("sentence_length_stddev", sd, "low" if 5 <= sd < 7 else None, detail)
+        out += metric("sentence_length_stddev", sd, "low" if 5 <= sd < 7 else None, detail)
     return out
 
 
@@ -366,12 +373,12 @@ def _dashes(texty: list[Block]) -> list[Signal]:
     )
     commas = sum(b.text.count(",") for b in texty)
     density, ratio = dashes / max(sentences, 1), dashes / max(commas, 1)
-    return _metric(
+    return metric(
         "em_dash_density",
         density,
         by_count(density, 0.20, 0.40, 0.80),
         f"{dashes} em-dash em {sentences} frases",
-    ) + _metric(
+    ) + metric(
         "em_dash_to_comma_ratio",
         ratio,
         by_count(ratio, 0.15, 0.30, 0.60),
@@ -385,7 +392,7 @@ def _ttr(words: list[str]) -> list[Signal]:
         return []
     window = [w.lower() for w in words[:300]]
     ratio = len(set(window)) / len(window)
-    return _metric(
+    return metric(
         "type_token_ratio",
         ratio,
         by_below(ratio, low=0.50, medium=0.42, high=0.35),
@@ -394,8 +401,7 @@ def _ttr(words: list[str]) -> list[Signal]:
 
 
 def analyze(text: str) -> Analysis:
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    blocks = _blocks(_mask(lines))
+    blocks = _blocks(_mask(split_lines(text)))
     texty = [b for b in blocks if b.kind in _TEXTY]
     words = [w for b in texty for w in _words(b.text)]
     signals = [
