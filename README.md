@@ -801,6 +801,11 @@ comentários óbvios e assim por diante, para você reescrever. Não dizem quem 
 traz `signals`, um `score` de 0.0 a 1.0, `confidence` (`low`, `medium`, `high`) e o `disclaimer`.
 É determinístico: regex, `ast` e contagens, sem modelo e sem rede.
 
+Não substituem o `service/scripts/score_stylometry.py` (o `--stylometry` do serviço), e não
+compartilham código com ele. Aquele dá uma pontuação única só para texto, com exit 1 acima de um
+limiar e sem a posição de cada achado. Estes listam cada sinal com linha e trecho, cobrem código
+além de texto e comparam antes e depois de uma reescrita.
+
 > Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em
 > código com convenções fortes. Uso pessoal — não use para acusar terceiros.
 
