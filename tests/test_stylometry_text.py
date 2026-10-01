@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import sys
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from stylometry import CATEGORY, SEVERITIES, Signal, cap_confidence, score_signals
+from stylometry import naturalize as nat
 from stylometry import text as st
 
 FIXTURES = ROOT / "tests" / "fixtures" / "stylometry"
@@ -354,6 +356,55 @@ def test_fenced_code_and_front_matter_are_ignored_but_keep_numbering():
 def test_unclosed_front_matter_is_not_swallowed():
     text = "---\nvale notar que sim.\n"
     assert [s.line for s in hits(text, "worth_noting")] == [2]
+
+
+# --- R12-02: what closes a fence ---------------------------------------------------------------
+# Three bold lead-ins open the bold_lead_in gate and one worth_noting is enough for its own, so a
+# block that leaks reports both; a block that is masked reports neither.
+
+
+def test_a_simple_fence_hides_the_signals_inside_it():
+    # The acceptance case of R12-02. It held before the fix too (text._mask already blanked a
+    # fence): a pin, not a regression test. One lead-in outside plus three inside would reach the
+    # gate of three if the block leaked.
+    text = (
+        "# Título\n\n**Termo** — definição\n\n```\n"
+        "**FakeTerm** — exemplo dentro de código\n**Outro** — exemplo\n**Mais** — exemplo\n"
+        "It's worth noting that this is fine.\n```\n"
+    )
+    assert not names(text) & {"worth_noting", "bold_lead_in"}
+
+
+LEAK = "**A** — x\n**B** — y\n**C** — z\nIt's worth noting that.\n"
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        f"````md\n```\n{LEAK}````",  # a shorter run inside is content
+        f"```\n```python\n{LEAK}```",  # a run with an info string is content
+        f"~~~\n```\n{LEAK}~~~",  # another character is content
+    ],
+)
+def test_only_a_long_enough_bare_fence_closes_a_block(block: str):
+    assert not names(f"# T\n\nProsa neutra.\n\n{block}\n") & {"worth_noting", "bold_lead_in"}
+
+
+def test_a_longer_fence_closes_and_the_text_after_it_is_counted():
+    assert [s.line for s in hits("```\ncode\n````\n\nVale notar que sim.\n", "worth_noting")] == [5]
+
+
+def test_the_detector_and_the_engine_agree_on_what_a_fence_covers():
+    # The engine masks with naturalize._line_kinds, the detector with text._mask: one rule for
+    # where a fence ends, or a score would count what the naturalizer refuses to touch.
+    rng = random.Random(12)  # noqa: S311 - seeded test data, not security
+    pieces = ("```", "````", "~~~", "~~~~", "```python", "~~~ x", "  ```", "texto", "", "**A** — b")
+    for _ in range(300):
+        lines = [rng.choice(pieces) for _ in range(rng.randint(1, 12))]
+        blanked = [a != b for a, b in zip(lines, st._mask(lines), strict=True)]
+        kinds = nat._line_kinds(lines, ())
+        covered = [k == "code block" and x != "" for k, x in zip(kinds, lines, strict=True)]
+        assert blanked == covered, lines
 
 
 def test_cap_confidence_only_lowers():

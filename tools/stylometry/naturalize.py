@@ -26,7 +26,7 @@ from urllib.parse import unquote
 
 from . import Analysis, clean
 from . import text as text_signals
-from .text import _EMOJI, _FENCE, _FRONT_KEY, _H, _LIST
+from .text import _EMOJI, _FENCE, _FRONT_KEY, _H, _LIST, _closes
 
 MAX_PASSES = 20  # every pass removes triggers and none creates one, so this is a safety net
 
@@ -166,12 +166,6 @@ def _line_kinds(lines: list[str], preserve: Sequence[str]) -> list[str | None]:
             continue
         state, gap = "none", True
     return kinds
-
-
-def _closes(opener: str, run: str, line: str) -> bool:
-    """A closing fence repeats the opener's character at least as many times and has no info
-    string: a ``` line inside a ```` block is content (``text._mask`` lets it close the block)."""
-    return run[0] == opener[0] and len(run) >= len(opener) and not line.lstrip()[len(run) :].strip()
 
 
 def _classify(

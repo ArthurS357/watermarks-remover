@@ -68,17 +68,24 @@ def _mask(lines: list[str]) -> list[str]:
         if end is not None:
             out[: end + 1] = [""] * (end + 1)
             start = end + 1
-    fence: str | None = None
+    fence = ""  # the opening run of ` or ~, empty outside a fence
     for i in range(start, len(out)):
         m = _FENCE.match(out[i])
-        if fence is None and m:
-            fence = m.group(1)[0]
-        elif fence is not None and m and m.group(1)[0] == fence:
-            fence = None
-        elif fence is None:
+        if not fence and m:
+            fence = m[1]
+        elif fence and m and _closes(fence, m[1], out[i]):
+            fence = ""
+        elif not fence:
             continue
         out[i] = ""
     return out
+
+
+def _closes(opener: str, run: str, line: str) -> bool:
+    """A closing fence repeats the opener's character at least as many times and has no info
+    string: a ``` line inside a ```` block is content. The naturalizer shares this rule, so the
+    detector never counts what the naturalizer refuses to touch."""
+    return run[0] == opener[0] and len(run) >= len(opener) and not line.lstrip()[len(run) :].strip()
 
 
 def _kind(line: str, previous: str | None) -> str | None:
