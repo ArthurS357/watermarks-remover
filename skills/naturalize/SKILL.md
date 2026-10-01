@@ -103,7 +103,7 @@ O score satura por faixa de severidade. Cair de 9 ocorrências para 3 de um mesm
 ## Limitações honestas
 
 - **Não reescreve frases.** `sentence_uniformity`, `paragraph_uniformity` e `type_token_ratio` ficam como estão. Tabelas (`comparison_table_symmetry`) também: tabela é dado.
-- **Só o que o dicionário conhece.** Um título como "O que saiu" é contado pelo detector, mas não é trocado. `dive in` sem objeto, `mergulhar` em português e hedges separados por quebra de linha ficam.
+- **Só o que o dicionário conhece.** "O que saiu" (→ "Resultado"), "O que falta" e "O que significa" são trocados; um título como "O que é isto" é contado pelo detector, mas não é trocado. `dive in` sem objeto, `mergulhar` em português e hedges separados por quebra de linha ficam.
 - **Código indentado dentro de item de lista não é reconhecido** (dentro de lista, linha indentada conta como continuação). Use bloco cercado por ``` nesses casos.
 - **Travessão vira vírgula também onde a frase pediria ponto.** Fica legível, mas revise o diff. Um intervalo sem número (`segunda — sexta`) vira lista (`segunda, sexta`).
 - **Texto quebrado em linhas fixas (hard-wrap).** Uma linha que continua a anterior (a anterior não termina em ponto) não é começo de frase, então um "vale notar que" ali fica. O mesmo vale para um `**Termo** — x` colado, sem linha em branco, logo abaixo de outro item.
