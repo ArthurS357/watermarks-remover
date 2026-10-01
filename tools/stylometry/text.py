@@ -83,8 +83,9 @@ def _mask(lines: list[str]) -> list[str]:
 
 def _closes(opener: str, run: str, line: str) -> bool:
     """A closing fence repeats the opener's character at least as many times and has no info
-    string: a ``` line inside a ```` block is content. The naturalizer shares this rule, so the
-    detector never counts what the naturalizer refuses to touch."""
+    string: a ``` line inside a ```` block is content. The naturalizer uses this same rule to
+    decide where a fence ends, so the two agree on fenced code. It also protects things the
+    detector still scores (tables, quotes, indented code); only the fence is shared."""
     return run[0] == opener[0] and len(run) >= len(opener) and not line.lstrip()[len(run) :].strip()
 
 
