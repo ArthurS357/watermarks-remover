@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 import struct
 import sys
 import zipfile
@@ -160,10 +161,9 @@ def test_the_read_itself_is_capped_even_if_stat_lies(tmp_path, monkeypatch):
     path = write(tmp_path, "a.md", "x" * 50)
     monkeypatch.setattr(loaders, "MAX_TEXT_BYTES", 10)
 
-    class Tiny:
-        st_size = 1
-
-    monkeypatch.setattr(Path, "stat", lambda self, **kwargs: Tiny())
+    # st_mode too: on Python 3.12 Path.is_file() reads it from Path.stat() (3.14 skips Path.stat).
+    tiny = SimpleNamespace(st_size=1, st_mode=stat.S_IFREG)
+    monkeypatch.setattr(Path, "stat", lambda self, **kwargs: tiny)
     result = loaders.load(path)
     assert isinstance(result, UnsupportedFormat)
     assert "maior" in result.reason
