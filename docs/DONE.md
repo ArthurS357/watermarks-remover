@@ -6,7 +6,7 @@ Histórico append-only. Mais recente no topo.
 
 | ID | Item | Estado | Commit |
 |---|---|---|---|
-| R12-05 | CI vermelha no primeiro push | 🟡 causa achada e corrigida; só um push novo confirma a CI verde | 8568366 |
+| R12-05 | CI vermelha no primeiro push | ✅ causa reproduzida no 3.12, corrigida e verificada em 3.12 e 3.14 (suíte completa e smoke do job Windows). A CI em si só confirma no próximo push | 8568366 |
 | R12-01 | `_TEMPLATES`: `o que saiu`, `o que falta`, `o que significa` | ✅ fechado, delta no `DONE.md` −0,288 | be80556 |
 | R12-02 | Detector fecha cerca só com trecho nu do tamanho do abridor | ✅ fechado, sem efeito medido nos arquivos do repo | 3924467, 30eb72e |
 | R12-03 | `tools/build_corpus.py` e `docs/CORPUS.md` | ✅ ferramenta pronta; **sem número real**, o corpus está vazio | 908c3a5, 0fad1f0 |
@@ -18,6 +18,8 @@ Histórico append-only. Mais recente no topo.
 |---|---|---|
 | Testes, `.venv` sem o grupo `formats` | 1790 coletados / 1720 passed / 70 skipped | 1849 / 1779 / 70, 0 falhas, exit 0 |
 | Testes, venv com `formats` | 1790 / 1782 / 8 (valor da R11; não remedi antes de editar) | 1849 / 1841 / 8, 0 falhas, exit 0 |
+| Testes no Python 3.12.13 (venv só com `requirements-dev.txt`, como a CI) | não medido: não havia 3.12 | 1849 / 1779 / 70, 0 falhas, com o comando do step `Test` da CI |
+| Testes no Python 3.14.4, mesmo comando da CI | 1790 / 1720 / 70 (sem a opção de cobertura) | 1849 / 1779 / 70, 0 falhas |
 | `ruff check .` e `ruff format --check .` | limpos, 126 arquivos | limpos, 129 arquivos |
 | `mypy --strict` em `tools/` | limpo, 9 arquivos | limpo, 10 arquivos |
 | `pip-audit` (`.venv`) | 0 vulnerabilidades | 0 |
@@ -26,11 +28,11 @@ Histórico append-only. Mais recente no topo.
 | Cobertura de ramo | motor 100% | motor 100% (299 instruções, 96 ramos), `text.py` 100%, `build_corpus.py` 99% (só o `sys.exit(main())`, que roda no teste de subprocesso) |
 | `service/` e `skills/` | | sem diff desde `3d7a1be` |
 
-R12 pronta para uso: sim, com três pendências que dependem de você e estão nos riscos abaixo (confirmar a CI com um push, preencher o corpus, e uma linha desatualizada na skill `naturalize`). Nenhum `git push` foi feito: oito commits locais à frente de `origin/main`, contando o deste registro.
+R12 pronta para uso: sim, com duas pendências que dependem de você e estão nos riscos abaixo (confirmar a CI com um push e preencher o corpus). Nenhum `git push` foi feito: dez commits locais à frente de `origin/main`, contando o deste registro.
 
 ## Rodada R12 — 2026-10-01 — Fechar os gaps restantes
 
-O plano foi escrito antes de qualquer edição, em c120491 (`docs/TODO.md`). As diferenças entre ele e o que saiu estão em "Ajustes durante a execução" (L1 a L8), no mesmo arquivo, e os seis achados da FASE 0 que mudaram premissas do prompt estão em B1 a B6.
+O plano foi escrito antes de qualquer edição, em c120491 (`docs/TODO.md`). As diferenças entre ele e o que saiu estão em "Ajustes durante a execução" (L1 a L10), no mesmo arquivo, e os seis achados da FASE 0 que mudaram premissas do prompt estão em B1 a B6.
 
 ### CI (R12-05)
 
@@ -45,7 +47,13 @@ O push de `3d7a1be` deixou o run 36882959726 vermelho. Diagnóstico:
 
 A causa não era Makefile, `$(CURDIR)` nem `python3`. O teste trocava `Path.stat` por um objeto só com `st_size`. No Python 3.12 `Path.is_file()` lê `self.stat().st_mode`; no 3.14 vai direto a `os.path.isfile`. Por isso passava aqui, que só tem 3.14. O Makefile usa TAB e `$(CURDIR)` corretos, conferido com `cat -A`. A correção é uma linha no teste (8568366).
 
-Não foi possível confirmar: sem push não há CI nova, e não há Python 3.12 nesta máquina (`uv python list` só oferece o download, que não fiz sem autorização). Só o job do Linux 3.12 rodou até o fim, com uma falha em toda a suíte, então Windows e macOS no 3.12 seguem sem resultado. O gap #5 fecha quando um push novo ficar verde.
+Na primeira passada não havia como confirmar: sem push não há CI nova, e não havia Python 3.12 na máquina (`uv python list` só oferecia o download, que não fiz sem autorização). Na retomada, com autorização, instalei o 3.12.13 (`uv python install 3.12`, 20,9 MiB; o `uv` reclamou só do atalho `python3.12`, o interpretador ficou instalado e funciona) e verifiquei:
+
+- Reprodução. O teste como estava em `3d7a1be`, no 3.12.13: `FAILED`, o mesmo `AttributeError: 'Tiny' object has no attribute 'st_mode'` em `pathlib.py:892` que a CI mostrou. O mesmo arquivo no 3.14.4: passou. O teste atual (`8568366`) no 3.12.13: passou. O fake com `st_mode` já estava commitado, então não houve segunda correção nem commit novo para o teste.
+- Suíte completa com o comando do step `Test` da CI (`pytest -q --cov=service/scripts --cov-report=term-missing`), num venv com só o `requirements-dev.txt`, como a CI instala: 3.12.13 deu 1849 coletados, 1779 passed, 70 skipped, 0 falhas; 3.14.4 deu os mesmos números. Cobertura de `service/scripts`: 74% nas duas.
+- Steps do job Windows, que nunca chegaram a rodar na CI: os 5 comandos do smoke saem com 0 falhas em 3.12 e em 3.14, e a validação dos dois `.ps1` (sintaxe e a checagem de CUDA) passa.
+
+Ainda sem verificação: Linux e macOS (aqui é Windows; o Linux 3.12 da CI rodou a suíte toda com a única falha que foi corrigida, e o macOS nunca terminou um job), o step `make test-cov-subprocess` (precisa de `make` e Linux) e o step de OpenAPI, que só roda no ubuntu com 3.14. O gap #5 fecha de vez quando um push novo ficar verde.
 
 ### Entregas
 
@@ -53,6 +61,7 @@ Não foi possível confirmar: sem push não há CI nova, e não há Python 3.12 
 - `tools/stylometry/text.py`: `_mask` fecha uma cerca só com um trecho nu, do mesmo caractere e pelo menos do tamanho do abridor. A regra (`_closes`) saiu do motor e agora existe uma só vez, usada pelos dois. O prompt dizia que o detector contava sinais dentro de cercas; na verdade ele já mascarava cerca simples (o teste de aceitação do prompt passava antes da correção, e ficou como pin). O erro real era o fechamento frouxo: um ` ``` ` dentro de um ```` ```` ```` encerrava o bloco de fora.
 - `tools/build_corpus.py` (`init`, `check`, `compare`) e `docs/CORPUS.md`. Reusa `detect_ai_patterns.scan`. `compare` imprime Cohen's d, o intervalo de 95% de d, a AUC e uma recomendação. O rótulo é a faixa em que o intervalo inteiro cai (d ≥ 0,8 `determinístico suficiente`, de 0,5 a menos de 0,8 `inconclusivo`, abaixo de 0,5 `ML justificado`); intervalo que cruza um limiar dá `inconclusivo`. O guard recusa pasta dentro do repo, inclusive escrita com o prefixo `\\?\` do Windows. Um teste fixa os números e rótulos do documento às constantes do script.
 - `clean-user-facing-text` instalada: ver a seção de sincronização.
+- `skills/naturalize/SKILL.md`: uma linha (8c6bab6). A lista de limitações dizia que `O que saiu` é contado pelo detector e não é trocado; agora cita as três chaves novas como trocadas e usa `O que é isto`, que o detector marca e o dicionário não conhece, como exemplo do limite. Editada na retomada, com autorização (o prompt original proibia tocar a skill). O resto do arquivo não mudou.
 
 ### Corpus (R12-03)
 
@@ -117,7 +126,7 @@ Relatório do repo inteiro (`detect_ai_patterns.py . --format md`, fora do git):
 
 ### Skills invocadas (para cruzar com o transcript)
 
-As 9 não-condicionais foram chamadas numa única mensagem, com os nomes qualificados (`ponytail:ponytail-review`, `ponytail:ponytail-debt`), e nenhuma falhou.
+As 9 não-condicionais foram chamadas numa única mensagem, com os nomes qualificados (`ponytail:ponytail-review`, `ponytail:ponytail-debt`), e nenhuma falhou. Na retomada (autorizações para a skill `naturalize`, o Python 3.12 e este registro) as 9 foram invocadas de novo, numa mensagem, nenhuma falhou, e o `python-test` era obrigatório por rodar a suíte em 3.12. As condicionais não tiveram gatilho novo: o diff da retomada é uma linha de prosa e este registro.
 
 | # | Skill | Fase | Propósito |
 |---|---|---|---|
@@ -136,9 +145,9 @@ As 9 não-condicionais foram chamadas numa única mensagem, com os nomes qualifi
 
 ### Riscos residuais
 
-- A CI não foi confirmada. Falta um push (que eu não fiz) e, para ver Windows e macOS no 3.12, `fail-fast: false` no workflow mostraria todas as combinações de uma vez. Sugestão minha, não aplicada: o prompt não esperava edição em `.github/workflows/`.
-- `skills/naturalize/SKILL.md`, linha 106, ainda diz que um título como `O que saiu` é contado pelo detector mas não é trocado. Agora é trocado. A restrição desta rodada proíbe tocar essa skill, então a linha ficou desatualizada; é uma frase para a próxima rodada, se você autorizar. O README (linha 968) e o fixture foram corrigidos.
-- O corpus está vazio; sem ele não há número de separabilidade, e a decisão sobre ML segue aberta.
+- A CI em si não foi re-executada: falta um push (que eu não fiz). A verificação local cobre Windows em 3.12 e 3.14; Linux e macOS só a CI mostra. `fail-fast: false` no workflow faria um push mostrar todas as combinações de uma vez, em vez de cancelar cinco por uma falha. Sugestão minha, não aplicada: o prompt não esperava edição em `.github/workflows/`.
+- A cópia instalada de `naturalize` em `~/.claude/skills/` (R11-07) ainda tem a frase antiga da linha 106: difere do repo só nessa linha. A autorização da retomada cobriu o `SKILL.md` do repo, não a instalação, então não a sincronizei. Para atualizar: `py install_skill.py --skill naturalize --cursor-home $env:USERPROFILE\.claude --force`, e tirar de `skills/` a pasta `.backup.*` que o instalador deixa.
+- O corpus está vazio; sem ele não há número de separabilidade, e a decisão sobre ML segue aberta. A pasta `%TEMP%\corpus\` foi criada na primeira passada (`init`) e não foi tocada na retomada: quem preenche é o usuário, à mão. Conferido na retomada, só leitura: o script responde a `--help`, o `check` acusa 0 arquivos e exit 1, e os 42 testes passam.
 - Cerca sem fechamento mascara o texto até o fim sem avisar (achado 4), e `_FENCE` aceita cerca com recuo de 4 ou mais (achado 10). Os dois vêm da R10.
 - Medição de efetividade com n = 1, e o delta mede formatação. Limiares e pesos do detector seguem sem calibração; o `build_corpus.py` existe para isso.
 - Procurei outro teste que troque métodos de `Path` ou `os.path` por dublês, como o que quebrou no 3.12. Só achei um (`isjunction`, que existe no 3.12 e não depende de `st_mode`). Código novo que faça isso é sensível ao 3.12.

@@ -81,6 +81,8 @@ O plano acima não foi reescrito: estas são as diferenças entre ele e o que sa
 | L6 | R12-03: `cohens_d` devolvia `+inf` sem variância | Devolve `None`, e `compare` recusa o corpus ("corpus degenerado", exit 1) | Revisão: 10 cópias do mesmo texto por lado davam `determinístico suficiente`. Reproduzido antes de corrigir; o teste que fixava o `+inf` foi invertido, e o exemplo do doc passou a usar fatias de texto com variância. 908c3a5 |
 | L7 | R12-03: guard `resolve().is_relative_to(ROOT)` | Tira o prefixo `\\?\` antes de comparar; teste com `ROOT` falso em `tmp_path` | Revisão: o prefixo de caminho longo do Windows passava pelo guard (reproduzido; nem `realpath` o remove). O teste antigo criava uma pasta dentro do repo se o guard regredisse. 908c3a5 |
 | L8 | R12-03: `init` com `exists()` e `write_text`; `check` sem contar arquivos de outra extensão; dica de comando sem aspas | `open("x")`; `check` conta os ignorados; caminho entre aspas; 3 casas no d | Achados 6 a 9 da revisão, baixos. 908c3a5 |
+| L9 | B5: a linha 106 de `skills/naturalize/SKILL.md` fica desatualizada e vai ao usuário como pergunta | Editada na retomada, com autorização: uma linha. 8c6bab6 | A restrição do prompt original proibia tocar a skill; o usuário autorizou depois. A cópia instalada em `~/.claude/skills/` não foi sincronizada |
+| L10 | B6: sem Python 3.12 local, o gap #5 só fecharia com push | Instalado o 3.12.13 (`uv python install 3.12`, autorizado); o teste antigo reproduzido, a suíte completa e os steps do job Windows rodados em 3.12 e 3.14 | O teste antigo falha no 3.12 com o mesmo traceback da CI e passa no 3.14. O fake já estava corrigido desde 8568366, então não houve commit novo de teste |
 
 ## Rodada R11 — 2026-09-30 — Naturalização e integração via skill
 
