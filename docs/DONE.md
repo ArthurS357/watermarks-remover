@@ -2,6 +2,148 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Estado do sistema — 2026-10-01 (R12)
+
+| ID | Item | Estado | Commit |
+|---|---|---|---|
+| R12-05 | CI vermelha no primeiro push | 🟡 causa achada e corrigida; só um push novo confirma a CI verde | 8568366 |
+| R12-01 | `_TEMPLATES`: `o que saiu`, `o que falta`, `o que significa` | ✅ fechado, delta no `DONE.md` −0,288 | be80556 |
+| R12-02 | Detector fecha cerca só com trecho nu do tamanho do abridor | ✅ fechado, sem efeito medido nos arquivos do repo | 3924467, 30eb72e |
+| R12-03 | `tools/build_corpus.py` e `docs/CORPUS.md` | ✅ ferramenta pronta; **sem número real**, o corpus está vazio | 908c3a5, 0fad1f0 |
+| R12-04 | `clean-user-facing-text` instalada sincronizada com o repo | ✅ operacional, sem commit | — |
+| R12-06 | `comparison_table_symmetry` em tabela de pares chave e valor | ✅ decidido: aceito, sem código | este commit |
+| R12-07 | Strings gatilho no README como exemplo | ✅ decidido: esperado, sem código | este commit |
+
+| Medida | Início (`3d7a1be`) | Fim (`0fad1f0`, antes deste registro) |
+|---|---|---|
+| Testes, `.venv` sem o grupo `formats` | 1790 coletados / 1720 passed / 70 skipped | 1849 / 1779 / 70, 0 falhas, exit 0 |
+| Testes, venv com `formats` | 1790 / 1782 / 8 (valor da R11; não remedi antes de editar) | 1849 / 1841 / 8, 0 falhas, exit 0 |
+| `ruff check .` e `ruff format --check .` | limpos, 126 arquivos | limpos, 129 arquivos |
+| `mypy --strict` em `tools/` | limpo, 9 arquivos | limpo, 10 arquivos |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades | 0 |
+| Bandit (`tools/`, `install_skill.py`) | 0 achados | 0 |
+| `vulture` (60%) e `pylint` duplicate-code | 0 e 10/10 | 0 achados em `build_corpus.py`, 10/10 |
+| Cobertura de ramo | motor 100% | motor 100% (299 instruções, 96 ramos), `text.py` 100%, `build_corpus.py` 99% (só o `sys.exit(main())`, que roda no teste de subprocesso) |
+| `service/` e `skills/` | | sem diff desde `3d7a1be` |
+
+R12 pronta para uso: sim, com três pendências que dependem de você e estão nos riscos abaixo (confirmar a CI com um push, preencher o corpus, e uma linha desatualizada na skill `naturalize`). Nenhum `git push` foi feito: oito commits locais à frente de `origin/main`, contando o deste registro.
+
+## Rodada R12 — 2026-10-01 — Fechar os gaps restantes
+
+O plano foi escrito antes de qualquer edição, em c120491 (`docs/TODO.md`). As diferenças entre ele e o que saiu estão em "Ajustes durante a execução" (L1 a L8), no mesmo arquivo, e os seis achados da FASE 0 que mudaram premissas do prompt estão em B1 a B6.
+
+### CI (R12-05)
+
+O push de `3d7a1be` deixou o run 36882959726 vermelho. Diagnóstico:
+
+| Job | Resultado |
+|---|---|
+| `lint` | passou |
+| `test (ubuntu-latest, 3.12)` | falhou no step `Test`: um teste, `test_the_read_itself_is_capped_even_if_stat_lies`, com `AttributeError: 'Tiny' object has no attribute 'st_mode'` |
+| as outras 5 combinações | canceladas por fail-fast antes de terminar |
+| `make test-cov-subprocess` | pulado, nunca rodou |
+
+A causa não era Makefile, `$(CURDIR)` nem `python3`. O teste trocava `Path.stat` por um objeto só com `st_size`. No Python 3.12 `Path.is_file()` lê `self.stat().st_mode`; no 3.14 vai direto a `os.path.isfile`. Por isso passava aqui, que só tem 3.14. O Makefile usa TAB e `$(CURDIR)` corretos, conferido com `cat -A`. A correção é uma linha no teste (8568366).
+
+Não foi possível confirmar: sem push não há CI nova, e não há Python 3.12 nesta máquina (`uv python list` só oferece o download, que não fiz sem autorização). Só o job do Linux 3.12 rodou até o fim, com uma falha em toda a suíte, então Windows e macOS no 3.12 seguem sem resultado. O gap #5 fecha quando um push novo ficar verde.
+
+### Entregas
+
+- `tools/stylometry/naturalize.py`: três chaves no `_TEMPLATES` (`o que saiu` → `Resultado`, `o que falta` → `Pendências`, `o que significa` → `Implicações`). O prompt dizia que o dicionário só tinha inglês; já tinha onze chaves em português, e faltavam as que o `DONE.md` usa. Duas sugestões do prompt não entraram: `o resultado final` (o detector não marca esse título, então trocá-lo mexeria num título que ninguém apontou) e `a linha de fundo` → `Resumo` (a chave existe com o valor `Conclusão`). A R11 tinha fixado o contrário para `O que saiu` em `tests/test_naturalize.py`; esse teste agora afirma o comportamento novo.
+- `tools/stylometry/text.py`: `_mask` fecha uma cerca só com um trecho nu, do mesmo caractere e pelo menos do tamanho do abridor. A regra (`_closes`) saiu do motor e agora existe uma só vez, usada pelos dois. O prompt dizia que o detector contava sinais dentro de cercas; na verdade ele já mascarava cerca simples (o teste de aceitação do prompt passava antes da correção, e ficou como pin). O erro real era o fechamento frouxo: um ` ``` ` dentro de um ```` ```` ```` encerrava o bloco de fora.
+- `tools/build_corpus.py` (`init`, `check`, `compare`) e `docs/CORPUS.md`. Reusa `detect_ai_patterns.scan`. `compare` imprime Cohen's d, o intervalo de 95% de d, a AUC e uma recomendação. O rótulo é a faixa em que o intervalo inteiro cai (d ≥ 0,8 `determinístico suficiente`, de 0,5 a menos de 0,8 `inconclusivo`, abaixo de 0,5 `ML justificado`); intervalo que cruza um limiar dá `inconclusivo`. O guard recusa pasta dentro do repo, inclusive escrita com o prefixo `\\?\` do Windows. Um teste fixa os números e rótulos do documento às constantes do script.
+- `clean-user-facing-text` instalada: ver a seção de sincronização.
+
+### Corpus (R12-03)
+
+`py tools\build_corpus.py init` criou `%TEMP%\corpus\` (com `human\`, `ai\` e um `README.md`); `check` e `compare` saíram com 1: 0 arquivos em cada pasta, faltam 10. **Não existe número real de separabilidade nesta rodada**, e nenhum texto foi inventado para preencher a lacuna. O exemplo no `docs/CORPUS.md` vem de uma execução real sobre os dois textos de teste do repositório, e o documento diz que serve só para mostrar o formato. A pasta temporária pode ser limpa pelo Windows; para manter, `--dir` em outro lugar. Passo seguinte, do usuário: pôr 10 ou mais arquivos (30 para ficar estável) em cada pasta e rodar `compare`.
+
+### Sincronização de `clean-user-facing-text` (R12-04)
+
+Backup da pasta instalada inteira em `%TEMP%\clean-ufc.bak.20261001-123348`, depois `install_skill.py --skill clean-user-facing-text --cursor-home ~/.claude --force`. O instalador deixou uma pasta `.backup.5da4d3d11662` dentro de `skills/`, com outro `SKILL.md`; ela foi **movida** para `%TEMP%`, não apagada. Depois: os 7 arquivos da instalada têm o mesmo hash do repo, e `git status` de `skills/` e `service/` segue vazio.
+
+Hash (SHA-256, 12 primeiros caracteres) da instalada antes, e o do repo, que a instalada passou a ter:
+
+- `scripts/clean_text.py`: `827BEE267055` (22/08) → `C7A95FC8BAE5`
+- `scripts/common.py`: `B1D242E740A3` (07/09) → `CA1BA91B420A`
+- `scripts/inspect_text.py`: `098B43DEFC08` (22/08) → `6B2D2EDFF290`
+- `scripts/text_unicode.py`: `8BEC9A737966` (22/08) → `CACB1F5CDC49`
+- `SKILL.md`: `1154C2A1D9B0` (07/09) → `649BBC6D399C`, com a seção da R11-06
+- `references/*` (2 arquivos): já iguais, sem mudança
+
+A instalada também tinha um `scripts/common.py.bak.20260907` solto que não existe no repo. Ele não está mais na instalada e continua no backup. Quem chamar scripts da cópia antiga por caminho fixo agora recebe os do repo; o backup tem a versão anterior.
+
+### Decisões de política (R12-06 e R12-07), sem código
+
+`comparison_table_symmetry` é falso positivo esperado em tabela estrutural: par chave e valor, ou comparação com duas colunas. O detector marca tabela cujas colunas têm o mesmo tamanho médio de célula, e não distingue um par `Medida | Valor` de uma tabela de IA. As duas tabelas marcadas no repo são desse tipo: `Medida | Valor final` na seção da R9 deste arquivo e `Tool | Role` no README. Calibrar o limiar para não pegá-las deixaria de pegar tabelas genuínas. A recomendação do `measure_skill_effectiveness` (usar tabela só se as colunas diferirem de verdade) segue válida para tabela narrativa. Por isso é o único sinal que sobra depois do naturalize no `DONE.md`.
+
+Sinais do README que são autorreferência: o README documenta as transformações do naturalizador com as próprias strings gatilho como exemplo. Nas linhas 918 a 920 e 963: `hedge_double`, `delve_family`, `fast_paced_world`, `worth_noting` e uma segunda ocorrência de `delve_family`. São artefato de documentação, não lacuna do texto. Decisão: opção B, documentar e não agir. Um `--exclude-self-reference` exigiria o detector distinguir menção de uso, o que é caro e sem ganho para um caso que se explica sozinho. Os outros sinais do README são de outra natureza: `comparison_table_symmetry` (acima), `em_dash_to_comma_ratio` (o texto usa muito travessão) e `template_heading` em `#### Why PDF needs qpdf, not just exiftool`, que é título legítimo pego pelo prefixo `why` do detector. Nenhum recebe ação.
+
+### Revisões
+
+`python-review` (agente `python-reviewer`) sobre o diff acumulado, com `ruff`, `mypy --strict`, `bandit` e os testes rodados por ele: **0 críticos, 0 altos, 5 médios, 5 baixos**. Reproduzi os dois que podiam enganar (1 e 2) antes de corrigir; os demais pela leitura do código ou pela conta.
+
+| # | Achado | Estado |
+|---|---|---|
+| 1 MÉDIA | Guard burlado por caminho com prefixo `\\?\` (`resolve()` o mantém e `is_relative_to` dizia "fora") | Corrigido, 908c3a5, com teste (só roda no Windows) |
+| 2 MÉDIA | 10 cópias do mesmo texto por lado davam d = +inf e `determinístico suficiente`, e um teste fixava isso | Corrigido: `compare` recusa corpus sem variância, o teste foi invertido |
+| 3 MÉDIA | Rótulo instável com n pequeno (com d verdadeiro 0,8 e 10 por lado, 25% das vezes saía `ML justificado`); o doc mandava confiar na AUC e o código a ignora | Corrigido: intervalo de 95% de d e rótulo pela faixa do intervalo inteiro. A AUC continua só como conferência, e o doc agora diz isso |
+| 4 MÉDIA | Cerca sem fechamento apaga o resto do texto, sem nota | **Não corrigido.** É o comportamento do CommonMark e vem da R10; risco residual |
+| 5 MÉDIA | Testes fracos ou com efeito colateral (o do guard criava pasta no repo se regredisse) | Corrigido: `ROOT` falso em `tmp_path`, mensagem no stderr, frases exatas do doc, faixa completa no `check` |
+| 6 BAIXA | `d` impresso arredondava para o outro lado do limiar | Corrigido: 3 casas e rótulo pelo intervalo |
+| 7 BAIXA | `README.md` do corpus sem criação exclusiva; `<tmp>/corpus` compartilhado em POSIX | `open("x")` aplicado. Para POSIX, uma frase no doc; a ferramenta é de uso pessoal no Windows |
+| 8 BAIXA | Dica de comando sem aspas | Corrigido |
+| 9 BAIXA | Arquivos de outra extensão eram ignorados em silêncio | `check` conta "ignorado(s)". Pastas `build/`, `dist/`, `node_modules/` seguem fora, herdado do detector |
+| 10 BAIXA | `_FENCE` aceita recuo de 4 ou mais; a docstring de `_closes` exagerava | Docstring corrigida, 30eb72e. `_FENCE` não mudou: é anterior e mudaria detector e motor |
+
+`code-reviewer`: roteiro da skill aplicado por mim sobre o diff `3d7a1be..0fad1f0`, junto do agente acima (intenção: fechar os gaps de efetividade, detecção, corpus e CI; estrutura: uma função movida em vez de duplicada, um script que reusa o detector; detalhes: as correções acima; testes: RED visto nos casos novos, os dois pins marcados como pin). Veredito: Approve. Não houve segundo revisor independente além do `python-reviewer`.
+
+### Dogfooding (FASE 8)
+
+Medido no `docs/DONE.md` de `0fad1f0`, antes deste registro: `naturalize.py docs/DONE.md --diff-only` troca os dois `### O que saiu` por `### Resultado` e desnegrita os 23 rótulos; nada mais. Cópia no scratchpad, idempotente (rodar de novo dá exit 3), 599 linhas antes e depois.
+
+| | Antes | Depois |
+|---|---|---|
+| Score | 0,4401 | 0,1521 |
+| Delta | | **−0,288** (meta ≤ −0,25: atingida) |
+| Efetividade | | `medium`, confiança high |
+| Eliminados | | `bold_lead_in` (23), `template_heading` (2) |
+| Restante | | `comparison_table_symmetry` (medium), aceito pela decisão acima |
+| Introduzidos | | nenhum |
+
+O delta bate com a conta do plano (−0,288). Continua n = 1 e vem de formatação (negrito e dois títulos), não de o texto ter ficado melhor. Medido de novo no arquivo final, já com esta seção: o mesmo 0,4401 → 0,1521. Na primeira versão da seção o score subiu para 0,4857, porque uma tabela de hashes minha (colunas de tamanho parecido) deu ao `comparison_table_symmetry` uma segunda ocorrência e a severidade foi de `medium` para `high`. Troquei a tabela por lista, que é o que a recomendação do próprio detector manda.
+
+Relatório do repo inteiro (`detect_ai_patterns.py . --format md`, fora do git): 172 → 175 arquivos, e só mudaram de score os dois fixtures de `naturalize/template_heading/` que o R12-01 editou. Os três arquivos novos pontuam 0,0. **A expectativa do prompt de que o score do repo cairia por causa da correção da cerca não se confirmou**: nenhum documento daqui tem cerca aninhada nem linha com info string dentro de cerca, então a correção é de um caso que o repo não exercita.
+
+### Skills invocadas (para cruzar com o transcript)
+
+As 9 não-condicionais foram chamadas numa única mensagem, com os nomes qualificados (`ponytail:ponytail-review`, `ponytail:ponytail-debt`), e nenhuma falhou.
+
+| # | Skill | Fase | Propósito |
+|---|---|---|---|
+| 1 | `ponytail:ponytail-review` | 0 | Gate. Régua de over-engineering; o `build_corpus.py` perdeu um helper e um dicionário antes de ser testado |
+| 2 | `ponytail:ponytail-debt` | 0 | Gate. `grep` de `ponytail:` no repo inteiro: 0 marcadores |
+| 3 | `python-pro` | 0 | Gate. Python 3.12+, tipagem completa, `mypy --strict` |
+| 4 | `py-test-quality` | 0 | Gate. Cobertura de ramo 100%, 100% e 99%; sem mutation testing no Windows |
+| 5 | `py-security` | 0 | Gate. `bandit` limpo; guard de caminho e leitura de corpus tratados na revisão |
+| 6 | `py-code-health` | 0 | Gate. `vulture` e `pylint` duplicate-code limpos; a regra de cerca deixou de ser duplicada |
+| 7 | `py-typing` | 0 | Gate. `mypy --strict` nos 10 arquivos de `tools/` |
+| 8 | `caveman` | 0 | Gate. Estilo da prosa no chat |
+| 9 | `python-test` | 0 | Gate. Baseline 1790 / 1720 / 70 e leitura das execuções, com e sem `formats` |
+| 10 | `python-review` (condicional) | 3 | Gatilho: parse de cerca e regex no gap #2, depois I/O no corpus. Invocada com o código existente, antes dos commits. A revisão do diff acumulado foi delegada ao `python-reviewer` |
+| 11 | `code-reviewer` (condicional) | 3 | Mesmo gatilho, invocada junto. Revisão descrita acima |
+| — | `python-type` (condicional) | — | **Não invocado.** O `mypy --strict` passou sem erro |
+
+### Riscos residuais
+
+- A CI não foi confirmada. Falta um push (que eu não fiz) e, para ver Windows e macOS no 3.12, `fail-fast: false` no workflow mostraria todas as combinações de uma vez. Sugestão minha, não aplicada: o prompt não esperava edição em `.github/workflows/`.
+- `skills/naturalize/SKILL.md`, linha 106, ainda diz que um título como `O que saiu` é contado pelo detector mas não é trocado. Agora é trocado. A restrição desta rodada proíbe tocar essa skill, então a linha ficou desatualizada; é uma frase para a próxima rodada, se você autorizar. O README (linha 968) e o fixture foram corrigidos.
+- O corpus está vazio; sem ele não há número de separabilidade, e a decisão sobre ML segue aberta.
+- Cerca sem fechamento mascara o texto até o fim sem avisar (achado 4), e `_FENCE` aceita cerca com recuo de 4 ou mais (achado 10). Os dois vêm da R10.
+- Medição de efetividade com n = 1, e o delta mede formatação. Limiares e pesos do detector seguem sem calibração; o `build_corpus.py` existe para isso.
+- Procurei outro teste que troque métodos de `Path` ou `os.path` por dublês, como o que quebrou no 3.12. Só achei um (`isjunction`, que existe no 3.12 e não depende de `st_mode`). Código novo que faça isso é sensível ao 3.12.
+- O mutation testing continua indisponível no Windows (R6).
+
 ## Estado do sistema — 2026-09-30 (R11)
 
 | ID | Item | Estado | Commit |

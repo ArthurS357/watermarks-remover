@@ -2,6 +2,10 @@
 
 ## Rodada R12 — 2026-10-01 — Fechar os gaps restantes
 
+Concluída em 2026-10-01. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-10-01-r12). O plano
+abaixo é o que foi escrito antes de qualquer edição (c120491); o que mudou na execução está em
+"Ajustes durante a execução", no fim desta seção.
+
 Fecha o que a R10, a R11 e a sessão manual apontaram e não corrigiram. Não é auditoria nova. Foco:
 efetividade real do `naturalize` e a infraestrutura para decidir sobre ML com número. Não toca
 `service/`, nem as skills `remove-ai-marks`, `naturalize` e `detect-ai-patterns`. Nenhum `git push`.
@@ -62,6 +66,21 @@ Hoje: `bold_lead_in` high (2,0) + `comparison_table_symmetry` medium (1,32) + `t
 - R12-02: o score do repo cai por menos falso positivo. É o efeito pretendido; a FASE 8 compara com o relatório de antes, guardado no scratchpad.
 - R12-03: d e AUC com n pequeno são instáveis. O mínimo de 10 por lado é um piso, não uma garantia, e o documento diz isso.
 - R12-04: a cópia instalada é sobrescrita. Backup antes, e a pasta `.backup.*` que o instalador cria dentro de `skills/` é movida para fora, não apagada.
+
+### Ajustes durante a execução
+
+O plano acima não foi reescrito: estas são as diferenças entre ele e o que saiu.
+
+| # | Plano | Execução | Motivo e commit |
+|---|---|---|---|
+| L1 | R12-02: "o score do repo cai por menos falso positivo" | Nenhum arquivo do repo mudou de score por causa da correção da cerca | Nenhum documento daqui tem cerca aninhada nem linha com info string dentro de cerca. Só mudaram os dois fixtures editados no R12-01. 3924467 |
+| L2 | R12-02: o teste de aceitação do prompt (cerca simples) seria o RED | Já passava antes da correção. O RED são a cerca aninhada e a cerca com info string | `text._mask` já blanqueava cerca simples. O teste do prompt ficou como pin, dito no comentário. 3924467 |
+| L3 | R12-04: "nenhuma pasta `.backup.*` sobrando" | Além dela, a instalada tinha um `scripts/common.py.bak.20260907` solto que não existe no repo | O backup em `%TEMP%` é da pasta inteira, então o `.bak` não se perde. Depois do sync a instalada tem os 7 arquivos do repo e mais nada |
+| L4 | `docs/CORPUS.md` sem teste | Um teste fixa os números e os rótulos citados no doc contra as constantes do script | O doc cita 0,8, 0,5, 30 e os três rótulos; sem o teste eles derivam do código. Na primeira versão o teste conferia só "10" e "30", que aparecem em qualquer lugar; passou a conferir frases e linhas da tabela |
+| L5 | R12-03: recomendação por d pontual (`>= 0,8`, `>= 0,5`) | Recomendação pela faixa do intervalo de 95% de d, que também é impresso; intervalo que cruza um limiar dá `inconclusivo` | Revisão do `python-reviewer`: com d verdadeiro 0,8 e 10 por lado o rótulo da versão pontual saía `ML justificado` em 25% das amostras. 908c3a5 |
+| L6 | R12-03: `cohens_d` devolvia `+inf` sem variância | Devolve `None`, e `compare` recusa o corpus ("corpus degenerado", exit 1) | Revisão: 10 cópias do mesmo texto por lado davam `determinístico suficiente`. Reproduzido antes de corrigir; o teste que fixava o `+inf` foi invertido, e o exemplo do doc passou a usar fatias de texto com variância. 908c3a5 |
+| L7 | R12-03: guard `resolve().is_relative_to(ROOT)` | Tira o prefixo `\\?\` antes de comparar; teste com `ROOT` falso em `tmp_path` | Revisão: o prefixo de caminho longo do Windows passava pelo guard (reproduzido; nem `realpath` o remove). O teste antigo criava uma pasta dentro do repo se o guard regredisse. 908c3a5 |
+| L8 | R12-03: `init` com `exists()` e `write_text`; `check` sem contar arquivos de outra extensão; dica de comando sem aspas | `open("x")`; `check` conta os ignorados; caminho entre aspas; 3 casas no d | Achados 6 a 9 da revisão, baixos. 908c3a5 |
 
 ## Rodada R11 — 2026-09-30 — Naturalização e integração via skill
 
