@@ -334,6 +334,25 @@ def test_a_small_sample_carries_a_warning_and_a_large_one_does_not(tmp_path, cap
     assert "menos de 30" not in run(capsys, "compare", "--dir", tmp_path)[1]
 
 
+# --- the procedure document --------------------------------------------------------------------
+
+
+def test_the_procedure_quotes_the_numbers_the_code_uses():
+    doc = (ROOT / "docs" / "CORPUS.md").read_text(encoding="utf-8")
+
+    def pt(x: float) -> str:
+        return str(x).replace(".", ",")
+
+    assert f"No mínimo {bc.MIN_PER_SIDE} arquivos em cada pasta" in doc
+    assert f"Com {bc.STABLE_PER_SIDE} ou mais por pasta" in doc
+    assert f"| {pt(bc.D_SUFFICIENT)} ou mais | `{bc.SUFFICIENT}` |" in doc
+    assert (
+        f"| de {pt(bc.D_MARGINAL)} até menos de {pt(bc.D_SUFFICIENT)} | `{bc.INCONCLUSIVE}` |"
+        in doc
+    )
+    assert f"| menos de {pt(bc.D_MARGINAL)}, inclusive negativo | `{bc.ML}` |" in doc
+
+
 # --- as a script -------------------------------------------------------------------------------
 
 
