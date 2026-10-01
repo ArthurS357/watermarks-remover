@@ -81,6 +81,9 @@ def test_a_percent_encoded_link_protects_the_title():
     "text",
     [
         "## Why this matters\n\n## Relevance\n\nSee [x](#relevance).\n",
+        "## O que saiu\n\n## Resultado\n",
+        "## O que falta\n\n## Pendências\n",
+        "## O que significa\n\n## Implicações\n",
         "## ✅ Resultado\n\n## Resultado\n",
         "Relevance\n=========\n\n## Why this matters\n",  # a setext title owns the slug too
     ],

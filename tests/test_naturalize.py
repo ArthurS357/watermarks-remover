@@ -25,6 +25,7 @@ from naturalize_support import (
 )
 from stylometry import CATEGORY
 from stylometry import naturalize as nat
+from stylometry import text as st
 
 POSITIVE = (
     "bold_lead_in",
@@ -408,13 +409,29 @@ def test_the_comma_ratio_alone_opens_the_dash_gate():
         ("O que isso significa", "Implicações"),
         ("O que vem a seguir", "Próximos passos"),
         ("A linha de fundo", "Conclusão"),
-        ("O que saiu", "O que saiu"),  # the detector counts it; the dictionary does not know it
+        # R12: the two titles docs/DONE.md uses, plus the short form of "o que isso significa"
+        ("O que saiu", "Resultado"),
+        ("O que falta", "Pendências"),
+        ("O que significa", "Implicações"),
+        ("O que saiu?", "Resultado"),  # the trailing mark is normalised away, not a separate key
+        ("Por que isso importa?", "Relevância"),
+        # counted by the detector, absent from the dictionary: stays
+        ("O que é isto", "O que é isto"),
+        ("O que mudou", "O que mudou"),
         ("Why not?", "Why not?"),
         ("Why `this` matters", "Why `this` matters"),
+        # "o resultado final" is not a title the detector flags, so there is nothing to rename
+        ("O resultado final", "O resultado final"),
     ],
 )
 def test_template_heading(title: str, expected: str):
     assert probe(f"## {title}", signals={"template_heading"}) == f"## {expected}".rstrip()
+
+
+def test_no_replacement_title_is_itself_a_template_title():
+    # otherwise the output would keep tripping the signal it was written to clear
+    flagged = [new for new in nat._TEMPLATES.values() if st._TEMPLATE.match(f"## {new}")]
+    assert flagged == []
 
 
 def test_a_template_heading_keeps_its_spacing():

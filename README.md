@@ -963,11 +963,12 @@ Score 0.28 → 0.04 (delta −0,24, efetividade `medium`, confiança `low`: text
 da última linha ficou porque um só está abaixo do limiar do detector, e `delve into` porque está
 entre crases.
 
-Medido no `docs/DONE.md` deste repositório (`naturalize.py` e depois o compare da R10): score
-0,392 → 0,219, **delta −0,173** (efetividade `medium`). O `bold_lead_in` (23 ocorrências) some;
-`comparison_table_symmetry` e `template_heading` (`### O que saiu`, que não está no dicionário)
-ficam. A queda vem de tirar o negrito dos rótulos, que é formatação: o score mede o que o detector
-conta, não se o texto ficou melhor.
+Medido no `docs/DONE.md` deste repositório (`naturalize.py` e depois o compare da R10, na R12):
+score 0,440 → 0,152, **delta −0,288** (efetividade `medium`). O `bold_lead_in` (23 ocorrências) e o
+`template_heading` (os dois `### O que saiu`, que viram `### Resultado`) somem;
+`comparison_table_symmetry` fica, porque tabela é dado e o motor não a toca. A queda vem de tirar o
+negrito dos rótulos e de trocar dois títulos, que é formatação: o score mede o que o detector conta,
+não se o texto ficou melhor.
 
 **Skills.** `skills/naturalize/` e `skills/detect-ai-patterns/` tornam os dois scripts invocáveis
 de qualquer sessão do Claude Code ("humaniza esse texto", "esse texto parece IA?"). O corpo de cada

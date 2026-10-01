@@ -12,7 +12,11 @@ O segundo é de template em português.
 
 Fecha o relatório.
 
-## O que saiu
+## Resultado
+
+Este título entrou no dicionário na R12, então muda.
+
+## O que é isto
 
 Este título está no detector, mas não no dicionário, então fica.
 
