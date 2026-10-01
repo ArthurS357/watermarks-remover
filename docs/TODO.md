@@ -1,5 +1,68 @@
 # TODO — watermarks-remover
 
+## Rodada R12 — 2026-10-01 — Fechar os gaps restantes
+
+Fecha o que a R10, a R11 e a sessão manual apontaram e não corrigiram. Não é auditoria nova. Foco:
+efetividade real do `naturalize` e a infraestrutura para decidir sobre ML com número. Não toca
+`service/`, nem as skills `remove-ai-marks`, `naturalize` e `detect-ai-patterns`. Nenhum `git push`.
+
+### Baseline (FASE 0, HEAD `3d7a1be`, igual a `origin/main`)
+
+| Medida | Valor | Esperado |
+|---|---|---|
+| `pytest` (`.venv` sem `formats`) | 1790 coletados / **1720 passed / 70 skipped**, 0 falhas, exit 0 | bate |
+| `ruff check .` / `ruff format --check .` | limpos, 126 arquivos | bate |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades | bate |
+| CI do push de `3d7a1be` (run 36882959726) | **vermelha**: `test (ubuntu-latest, 3.12)` falhou; as outras 5 combinações foram canceladas por fail-fast; `lint` passou | esperava verde |
+
+Divergência só na CI, e o prompt a trata como prioridade ALTA: o diagnóstico vem antes de tudo.
+
+### Achados da FASE 0 que mudam premissas do prompt
+
+| # | Achado | Consequência no plano |
+|---|---|---|
+| B1 | A CI não falhou no `make test-cov-subprocess` (esse step foi pulado). Falhou o step `Test`, **um** teste: `test_the_read_itself_is_capped_even_if_stat_lies`. O teste troca `Path.stat` por um objeto só com `st_size`. No Python 3.12 `Path.is_file()` chama `self.stat().st_mode` e estoura com `AttributeError`; no 3.14 `is_file` vai direto a `os.path.isfile` e o teste passava localmente | Falha de teste, não de código nem de Makefile. O Makefile usa TAB e `$(CURDIR)` corretos, e `python3` existe no runner. Correção de uma linha no teste, antes de tudo |
+| B2 | `_TEMPLATES` **já tem** português (11 chaves: `por que isso importa`, `o que isso significa`, `o que vem a seguir`, `a linha de fundo`...). Faltam as que o `docs/DONE.md` usa: `o que saiu` e `o que falta` (e `o que significa`). A R11 fixou o contrário de propósito: `tests/test_naturalize.py:411` espera `O que saiu` inalterado | O teste vira o RED da mudança. Mudança de comportamento deliberada, registrada |
+| B3 | Duas chaves do prompt não entram. `o resultado final` não casa com o `_TEMPLATE` do detector (`por que\|o que\|a linha\|why\|what\|the bottom`), então trocá-la reescreveria um título que o detector não aponta. `a linha de fundo` já existe com valor `Conclusão`, e trocar para `Resumo` seria mudança sem ganho. As chaves com `?` do prompt já funcionam: a chave é normalizada com `rstrip("?!.:; ")` | Um teste pina o `?`; as duas não são adicionadas |
+| B4 | O detector **já mascara** cercas (`text._mask`). O bug real é o fechamento frouxo, que a R11 descreveu: qualquer trecho do mesmo caractere fecha, então um ` ``` ` dentro de um ```` ```` ```` encerra o bloco de fora, e uma linha ` ```python ` também. O teste de aceitação do prompt (cerca simples) provavelmente já passa | Escrevo o teste do prompt primeiro: se já passa, registro; o RED é a cerca aninhada. `--no-mask` não entra: o detector nunca teve caminho sem máscara |
+| B5 | `skills/naturalize/SKILL.md:106` e `README.md:968` dizem que `O que saiu` não é trocado, e o fixture `tests/fixtures/stylometry/naturalize/template_heading/after.md` fixa isso. Depois do R12-01 os três ficam desatualizados | Fixture e README são corrigidos no mesmo bloco. A skill `naturalize` o prompt proíbe de tocar: **uma linha fica desatualizada e vai ao usuário como pergunta** |
+| B6 | `git push` está proibido, então a CI não pode ser re-executada nesta rodada. Não há Python 3.12 local (`uv python list` só oferece download) | O gap #5 fecha como "diagnosticado e corrigido, a confirmar no próximo push", não como "CI verde". Não instalo interpretador sem autorização |
+
+### Plano
+
+Ordem de execução: R12-05 (CI, ALTA) → R12-01 → R12-02 → R12-03 → R12-04 → R12-06 e R12-07 → dogfooding e registro. R12-01 e R12-02 são independentes, mas o 02 move uma função de `text.py` que o motor importa, então o 01 vem primeiro e a suíte inteira roda entre os dois.
+
+| ID | Gap (uma linha) | Decisão preliminar | Arquivos | Critério de sucesso |
+|---|---|---|---|---|
+| R12-05 | CI vermelha: o teste do `stat` falso quebra no Python 3.12 | Aplicar | `tests/test_stylometry_loaders.py` | O teste passa; a causa fica no commit; fica dito que a CI só confirma no próximo push |
+| R12-01 | `_TEMPLATES` não troca `O que saiu` e `O que falta`, que o detector marca | Aplicar `o que saiu`→`Resultado`, `o que falta`→`Pendências`, `o que significa`→`Implicações` | `tools/stylometry/naturalize.py`, `tests/test_naturalize.py`, fixture `template_heading/after.md`, `README.md` | Teste positivo por chave nova, negativo para título fora do dicionário, saída sem colisão de slug; `DONE.md` perde o `template_heading`; delta medido, esperado perto de −0,29 (conta abaixo) |
+| R12-02 | Detector fecha uma cerca com qualquer trecho do mesmo caractere | Aplicar: mover `_closes` para `text.py` e usá-la nos dois | `tools/stylometry/text.py`, `tools/stylometry/naturalize.py`, `tests/test_stylometry_text.py` | Teste da cerca simples do prompt, teste da cerca aninhada e da info string (RED antes), motor sem regressão, uma só definição de "fecha a cerca" |
+| R12-03 | Não existe corpus pessoal nem script para criar e medir | Aplicar: `init`, `check`, `compare`; Cohen's d mais AUC; recusa caminho dentro do repo | `tools/build_corpus.py`, `tests/test_build_corpus.py`, `docs/CORPUS.md` | `compare` devolve d e AUC e uma recomendação por limiar escrito; recusa corpus com menos de 10 por pasta; cobertura de ramo ≥ 99% |
+| R12-04 | `clean-user-facing-text` instalada está defasada do repo | Aplicar o sync, com backup em `%TEMP%` antes | operacional, `~/.claude/skills/`, nada no git | Hash dos arquivos igual ao do repo depois; backup em disco; nenhuma pasta `.backup.*` sobrando em `skills/` |
+| R12-06 | `comparison_table_symmetry` é falso positivo em tabela de pares chave e valor | Documentar como aceito, sem código | `docs/DONE.md` | Decisão e motivo registrados |
+| R12-07 | O README usa as strings gatilho como exemplo e o detector as conta | Documentar como esperado (opção B do prompt), sem código | `docs/DONE.md` | Linhas do README listadas, decisão e motivo registrados |
+
+Blocos de commit: plano (`docs(todo)`) → CI (`fix(test)`) → 1 (templates) → 2 (detector) → 3 (script do corpus) → 4 (`docs/CORPUS.md`) → 5 (`docs(done)`). O bloco 5 do prompt (`chore(skills)`) só existe se o repo mudar, e o sync é só instalação, então não deve haver commit dele. TDD dentro de cada bloco: teste vermelho, código, verde, `ruff`, suíte completa.
+
+### Desenho do R12-03
+
+- Reusa `detect_ai_patterns.scan` com `only="text"` e `warn=False`. Não reimplementa leitura de arquivo nem pontuação.
+- `init` cria `human/`, `ai/` e um `README.md` na raiz. `check` conta arquivos e pulados e mostra mínimo, mediana e máximo por lado; exit 1 abaixo de 10 por pasta. `compare` faz o `check` e, passando, calcula as médias, Cohen's d (desvio agrupado) e AUC (probabilidade de um texto de IA pontuar acima de um humano, empate vale meio).
+- Recomendação por limiar escrito no código e em `docs/CORPUS.md`: d ≥ 0,8 "determinístico suficiente"; 0,5 ≤ d < 0,8 "inconclusivo, recalibrar limiares antes de pensar em ML"; d < 0,5 (inclusive negativo) "ML justificado". "ML justificado" quer dizer que o detector atual não separa, não que um corpus de dezenas de arquivos treina um modelo. O documento diz isso.
+- Corpus em `%TEMP%\corpus\` por padrão (`tempfile.gettempdir()`), nunca versionado. Não existe corpus real nesta máquina, então nesta rodada o `compare` não produz o número real. Isso fica dito, e o teste usa pontuações conhecidas.
+
+### Conta do delta esperado no `docs/DONE.md` (R12-01)
+
+Hoje: `bold_lead_in` high (2,0) + `comparison_table_symmetry` medium (1,32) + `template_heading` com 2 ocorrências, medium (1,32) = 4,64, e `1 - exp(-4,64/8)` dá 0,4401, o que bate com a medição. Depois do naturalize completo, só a tabela fica: 1,32, score 0,1521. Delta esperado −0,288. A meta do prompt (≤ −0,25) é alcançável, mas só enquanto o arquivo tiver os dois títulos `### O que saiu`. A medição final sai do arquivo real, não desta conta.
+
+### Riscos por item
+
+- R12-05: outros testes quebrarem só em 3.12 em Windows ou macOS. Só o job do Linux rodou até o fim, com uma falha em toda a suíte; os outros foram cancelados. Não dá para saber sem outro push. `fail-fast: false` no workflow mostraria tudo de uma vez, mas o prompt não espera edição em `.github/workflows/`, então fica como sugestão.
+- R12-01: renomear título move âncora. As proteções da R11 (link para o título, slug existente) continuam valendo e têm teste. Dois títulos iguais viram dois `Resultado`, e o GitHub gera `resultado` e `resultado-1`, como já era com `o-que-saiu`.
+- R12-02: o score do repo cai por menos falso positivo. É o efeito pretendido; a FASE 8 compara com o relatório de antes, guardado no scratchpad.
+- R12-03: d e AUC com n pequeno são instáveis. O mínimo de 10 por lado é um piso, não uma garantia, e o documento diz isso.
+- R12-04: a cópia instalada é sobrescrita. Backup antes, e a pasta `.backup.*` que o instalador cria dentro de `skills/` é movida para fora, não apagada.
+
 ## Rodada R11 — 2026-09-30 — Naturalização e integração via skill
 
 Concluída em 2026-09-30. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-09-30-r11). O plano
