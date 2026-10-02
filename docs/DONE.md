@@ -331,7 +331,7 @@ O plano foi escrito antes de qualquer edição, em 868478e (`docs/TODO.md`). As 
 
 ### O que saiu
 
-- **`tools/detect_ai_patterns.py`** e o pacote `tools/stylometry/` (`text.py`, `code.py`, `loaders.py`, `isolate.py`): 37 sinais com linha e trecho, em texto (`.md .txt .html .docx .pdf`) e código (`.py .ts .tsx .js .jsx`). Determinístico: regex, `ast`, `tokenize`, tree-sitter quando instalado. A saída nunca traz `is_ai`: só `signals`, `score`, `confidence` e `disclaimer`.
+- **`tools/detect_ai_patterns.py`** e o pacote `tools/stylometry/` (`text.py`, `code.py`, `loaders.py`, `isolate.py`): 37 sinais com linha e trecho, em texto (`.md .txt .html .docx .pdf`) e código (`.py`; `.ts .tsx .js .jsx` também são lidos, mas a R13 mostrou que a detecção em TS/JS não emite sinal em código real e não é uma promessa: ver a R13). Determinístico: regex, `ast`, `tokenize`, tree-sitter quando instalado. A saída nunca traz `is_ai`: só `signals`, `score`, `confidence` e `disclaimer`.
 - **`tools/measure_skill_effectiveness.py`**: antes/depois de arquivo ou pasta (pareada pelo caminho relativo), com `delta`, sinais eliminados, restantes e introduzidos, faixa de `effectiveness` e uma `recommendation` que nomeia o pior sinal que sobrou e o que fazer com ele.
 - **`pyproject.toml`** só com `[dependency-groups].formats`. Sem `[project]` e sem `[tool.*]`: conferido que `ruff`, `pytest` e `coverage` continuam lendo `ruff.toml`, `pytest.ini` e `.coveragerc`.
 - **Testes** em arquivos próprios (`test_stylometry_text/code/loaders/isolate.py`, `test_detect_ai_patterns.py`, `test_measure_skill_effectiveness.py`, `test_pyproject_formats_group.py`), todos abaixo de 800 linhas.

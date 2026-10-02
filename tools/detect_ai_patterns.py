@@ -6,9 +6,10 @@ headings, obvious comments, ...) so you can rewrite them. It never says whether 
 written by an AI: the output is ``signals``, a ``score`` from 0.0 to 1.0, a ``confidence`` and a
 ``disclaimer``. Deterministic: regexes, ``ast`` and counts, no model, no network.
 
-Text: .md .txt .html .docx .pdf     Code: .py .ts .tsx .js .jsx
+Text: .md .txt .html .docx .pdf     Code: .py (also read: .ts .tsx .js .jsx, not validated)
 .docx/.pdf and tree-sitter (.ts/.tsx/.js/.jsx) need the optional ``formats`` dependency group;
-without it those files are skipped with a warning (or, for TS/JS, analysed by regex).
+without it those files are skipped with a warning (or, for TS/JS, analysed by regex). The TS/JS
+signals emitted nothing on 30 real files (R13): do not read their silence as "no AI style".
 
 Exit codes: 0 ran; 1 the path does not exist (or --output cannot be used); 2 nothing was analysed
 (also argparse's usage error).

@@ -817,7 +817,9 @@ python tools/measure_skill_effectiveness.py ANTES DEPOIS [--format json|md] \
     [--signals sinal1,sinal2] [--output ARQUIVO]
 ```
 
-- **Formatos.** Texto: `.md .txt .html .docx .pdf`. Código: `.py .ts .tsx .js .jsx`.
+- **Formatos.** Texto: `.md .txt .html .docx .pdf`. Código: `.py`. O detector também lê
+  `.ts .tsx .js .jsx`, mas **sem promessa de cobertura**: em 30 arquivos TS/TSX reais ele não
+  emitiu sinal nenhum, com tree-sitter ou sem. Tratar TS/JS fica para uma rodada dedicada.
 - **Grupo opcional `formats`.** `.docx`, `.pdf` e o tree-sitter (TS/JS) precisam dele. Sem o
   grupo, `.docx`/`.pdf` são pulados com um aviso e TS/JS são analisados por regex, com
   `confidence` no máximo `low`. Instale sem mexer no resto do ambiente:
