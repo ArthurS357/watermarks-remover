@@ -7,8 +7,13 @@ sides well enough to stay deterministic or whether a learned model is worth inve
 corpus is private and never versioned: it lives outside the repository (default ``<temp>/corpus``)
 and ``init`` refuses a folder inside it. Procedure and how to read the result: docs/CORPUS.md.
 
+``--mode text`` (default) measures prose, ``--mode code`` measures Python source and ``--mode all``
+does both, one after the other: scores of prose and of code are not comparable, so they are never
+pooled. Keep one corpus folder per mode.
+
 Exit codes: 0 ran; 1 the corpus is missing, too small (fewer than 10 files in a folder), degenerate
-(no variance in either folder) or cannot be created; 2 usage error (argparse).
+(no variance in either folder) or cannot be created (``--mode all``: the worst of the two); 2 usage
+error (argparse).
 """
 
 from __future__ import annotations
@@ -27,11 +32,13 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from detect_ai_patterns import Options, iter_files, scan, utf8_streams
-from stylometry import DISCLAIMER, printable
+from stylometry import DISCLAIMER, loaders, printable
 
 ROOT = Path(__file__).resolve().parents[1]
 LONG_PATH = chr(92) * 2 + "?" + chr(92)  # the Windows extended-length prefix, which resolve() keeps
 SIDES = ("human", "ai")
+KINDS = ("text", "code")
+LEFT_OUT = {"text": "outra extensão ou código", "code": "outra extensão, texto ou TS/JS"}
 MIN_PER_SIDE = 10  # below this a standard deviation is not worth printing
 STABLE_PER_SIDE = 30  # below this d and AUC swing a lot from one sample to the next
 D_SUFFICIENT = 0.8  # Cohen's "large"
@@ -46,7 +53,8 @@ human/  textos que VOCÊ escreveu, sem ajuda de modelo (e-mails, notas, relatór
 ai/     textos que um modelo escreveu para você (cole a saída sem editar).
 
 - No mínimo 10 arquivos em cada pasta; 30 ou mais para o resultado ficar estável.
-- .md, .txt ou .html (.docx e .pdf só com o grupo `formats` instalado). Código não conta.
+- .md, .txt ou .html (.docx e .pdf só com o grupo `formats` instalado). Código não conta, a não
+  ser com `--mode code`: aí contam só os .py, e prosa não conta.
 - Mesmo assunto e tamanho parecido nos dois lados, senão o detector mede tema e não estilo.
 - Nada daqui entra no git.
 
@@ -74,12 +82,30 @@ def quoted(path: Path) -> str:
     return f'"{printable(str(path))}"'
 
 
-def measure(corpus: Path, side: str) -> Side:
-    root, options = corpus / side, Options(only="text", warn=False)
-    result = scan(root, options)
+def scan_python(root: Path, options: Options) -> tuple[list[float], int]:
+    """Scores of the ``.py`` files under ``root``, each scanned on its own. ``scan`` decides what
+    a "small project" is from how many code files it is given, so scanning a whole folder let the
+    folder's size, not the file, switch ``over_descriptive_name`` on: a side with more than 50
+    files scored lower than the same files in a side with 10."""
+    scores, skipped = [], 0
+    for path in iter_files(root, options):
+        fmt = loaders.format_of(path)
+        if fmt is not None and fmt[1] == "python":
+            one = scan(path, options)
+            scores += [f.score for f in one.files.values()]
+            skipped += len(one.skipped)
+    return scores, skipped
+
+
+def measure(corpus: Path, side: str, kind: str = "text") -> Side:
+    root, options = corpus / side, Options(only=kind, warn=False)
+    if kind == "code":
+        scores, skipped = scan_python(root.resolve(), options)
+    else:
+        result = scan(root, options)
+        scores, skipped = [f.score for f in result.files.values()], len(result.skipped)
     seen = sum(1 for _ in iter_files(root.resolve(), options))
-    scored, skipped = len(result.files), len(result.skipped)
-    return Side(sorted(f.score for f in result.files.values()), skipped, seen - scored - skipped)
+    return Side(sorted(scores), skipped, seen - len(scores) - skipped)
 
 
 def cohens_d(human: Sequence[float], ai: Sequence[float]) -> float | None:
@@ -131,9 +157,9 @@ def verdict(d: float, n1: int, n2: int) -> tuple[str, str]:
     return ML, note + " Vale investigar, mas um corpus pessoal é pequeno para treinar."
 
 
-def describe(name: str, side: Side) -> str:
+def describe(name: str, side: Side, kind: str = "text") -> str:
     extra = f", {side.skipped} pulado(s)" if side.skipped else ""
-    extra += f", {side.ignored} ignorado(s) (outra extensão ou código)" if side.ignored else ""
+    extra += f", {side.ignored} ignorado(s) ({LEFT_OUT[kind]})" if side.ignored else ""
     if not side.scores:
         return f"{name}: 0 arquivos{extra}"
     s = side.scores
@@ -141,13 +167,13 @@ def describe(name: str, side: Side) -> str:
     return f"{name}: {len(s)} arquivos ({spread}){extra}"
 
 
-def check(corpus: Path, sides: dict[str, Side]) -> int:
+def check(corpus: Path, sides: dict[str, Side], kind: str = "text") -> int:
     print(f"corpus: {printable(str(corpus))}")
     short = {
         n: MIN_PER_SIDE - len(s.scores) for n, s in sides.items() if len(s.scores) < MIN_PER_SIDE
     }
     for name, side in sides.items():
-        print(describe(name, side))
+        print(describe(name, side, kind))
     for name, need in short.items():
         print(
             f"erro: faltam {need} arquivo(s) em {name} (mínimo {MIN_PER_SIDE} por pasta)",
@@ -156,8 +182,8 @@ def check(corpus: Path, sides: dict[str, Side]) -> int:
     return 1 if short else 0
 
 
-def compare(corpus: Path, sides: dict[str, Side]) -> int:
-    if code := check(corpus, sides):
+def compare(corpus: Path, sides: dict[str, Side], kind: str = "text") -> int:
+    if code := check(corpus, sides, kind):
         return code
     human, ai = sides["human"].scores, sides["ai"].scores
     d = cohens_d(human, ai)
@@ -213,6 +239,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("command", choices=("init", "check", "compare"))
     parser.add_argument("--dir", type=Path, help="corpus folder (default: <temp>/corpus)")
+    parser.add_argument(
+        "--mode",
+        choices=(*KINDS, "all"),
+        default="text",
+        help="what to measure: prose, Python source, or both one after the other (default: text)",
+    )
     args = parser.parse_args(argv)
     utf8_streams()
     corpus: Path = args.dir or default_dir()
@@ -226,8 +258,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    sides = {side: measure(corpus, side) for side in SIDES}
-    return (check if args.command == "check" else compare)(corpus, sides)
+    kinds = KINDS if args.mode == "all" else (args.mode,)
+    codes = []
+    for kind in kinds:
+        if len(kinds) > 1:
+            print(f"== modo: {kind} ==")
+        sides = {side: measure(corpus, side, kind) for side in SIDES}
+        codes.append((check if args.command == "check" else compare)(corpus, sides, kind))
+    return max(codes)
 
 
 if __name__ == "__main__":

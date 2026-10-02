@@ -26,11 +26,22 @@ AI_LINES = AI.splitlines(keepends=True)
 AI_SPREAD = [b"".join(AI_LINES[:k]) for k in (5, 8, 11, 14, 17, 20, 23, 26, 32, 35)]
 
 
-def fill(corpus: Path, side: str, *contents: bytes) -> None:
-    """One ``.md`` file per item of ``contents``."""
+def fill(corpus: Path, side: str, *contents: bytes, ext: str = ".md") -> None:
+    """One file per item of ``contents`` (``.md`` unless ``ext`` says otherwise)."""
     (corpus / side).mkdir(parents=True, exist_ok=True)
     for i, content in enumerate(contents):
-        (corpus / side / f"{i:02}.md").write_bytes(content)
+        (corpus / side / f"{i:02}{ext}").write_bytes(content)
+
+
+def obvious(k: int) -> bytes:
+    """A Python file with ``k`` comments that state the obvious: 1-2 score low, 3-5 medium, 6+
+    high, so a side built from several ``k`` has real spread."""
+    body = "".join(f"# Initialize value {i}\nvalue_{i} = {i}\n" for i in range(k))
+    return (body or "value = 1\n").encode()
+
+
+CODE_HUMAN = [obvious(0)] * 10
+CODE_AI = [obvious(k) for k in (1, 1, 2, 3, 3, 4, 6, 6, 8, 10)]
 
 
 def run(capsys, *argv):
@@ -266,6 +277,111 @@ def test_subfolders_are_read(tmp_path, capsys):
     fill(tmp_path, "ai", *[AI] * 10)
     _, out, _ = run(capsys, "check", "--dir", tmp_path)
     assert "human: 10 arquivos" in out
+
+
+# --- --mode ------------------------------------------------------------------------------------
+
+
+def test_the_code_spread_used_below_is_real():
+    from stylometry import code as code_signals
+
+    scores = [code_signals.analyze(c.decode(), "python").score for c in CODE_AI]
+    assert len(set(scores)) >= 3
+    assert {code_signals.analyze(c.decode(), "python").score for c in CODE_HUMAN} == {0.0}
+
+
+def test_the_default_mode_is_text_and_says_nothing_new(tmp_path, capsys):
+    fill(tmp_path, "human", *[HUMAN] * 10)
+    fill(tmp_path, "ai", *AI_SPREAD)
+    default = run(capsys, "compare", "--dir", tmp_path)
+    assert default == run(capsys, "compare", "--dir", tmp_path, "--mode", "text")
+    assert "modo" not in default[1]
+
+
+def test_code_mode_reads_python_and_leaves_prose_out(tmp_path, capsys):
+    fill(tmp_path, "human", *CODE_HUMAN, ext=".py")
+    fill(tmp_path, "ai", *CODE_AI, ext=".py")
+    (tmp_path / "human" / "notes.md").write_bytes(HUMAN)
+    code, out, _ = run(capsys, "check", "--dir", tmp_path, "--mode", "code")
+    assert code == 0
+    [human_line] = [line for line in out.splitlines() if line.startswith("human:")]
+    assert human_line.startswith("human: 10 arquivos") and "1 ignorado(s)" in human_line
+
+
+def test_code_mode_does_not_count_typescript_and_says_so(tmp_path, capsys):
+    # R13: the TS/JS signals emit nothing on real code, so they are not part of the measurement
+    fill(tmp_path, "human", *CODE_HUMAN, ext=".py")
+    fill(tmp_path, "ai", *CODE_AI, ext=".py")
+    for name in ("a.ts", "b.tsx", "c.js"):
+        (tmp_path / "ai" / name).write_text("export const x = 1 as const;\n", encoding="utf-8")
+    _, out, _ = run(capsys, "check", "--dir", tmp_path, "--mode", "code")
+    [ai_line] = [line for line in out.splitlines() if line.startswith("ai:")]
+    assert ai_line.startswith("ai: 10 arquivos") and "3 ignorado(s)" in ai_line
+    assert "TS/JS" in ai_line
+
+
+def test_text_mode_does_not_count_code(tmp_path, capsys):
+    fill(tmp_path, "human", *[HUMAN] * 10)
+    fill(tmp_path, "ai", *[AI] * 10)
+    fill(tmp_path, "human", *CODE_HUMAN, ext=".py")
+    _, out, _ = run(capsys, "check", "--dir", tmp_path)
+    assert "human: 10 arquivos" in out and "10 ignorado(s)" in out
+
+
+def test_code_mode_compare_wires_the_code_scores_into_the_numbers(tmp_path, capsys):
+    fill(tmp_path, "human", *CODE_HUMAN, ext=".py")
+    fill(tmp_path, "ai", *CODE_AI, ext=".py")
+    code, out, _ = run(capsys, "compare", "--dir", tmp_path, "--mode", "code")
+    assert code == 0
+    assert "AUC: 1.00" in out  # every ai file scores above 0, every human file at 0
+    assert "recomendação: determinístico suficiente" in out
+
+
+def test_code_mode_refuses_a_corpus_without_ten_python_files(tmp_path, capsys):
+    fill(tmp_path, "human", *CODE_HUMAN[:9], ext=".py")
+    fill(tmp_path, "ai", *CODE_AI, ext=".py")
+    code, out, err = run(capsys, "compare", "--dir", tmp_path, "--mode", "code")
+    assert code == 1 and "faltam 1 arquivo(s) em human" in err
+    assert "recomendação" not in out
+
+
+def test_the_size_of_a_folder_does_not_decide_which_code_signals_run(tmp_path):
+    # review of R13: ``scan`` calls a project "small" up to 50 code files, so a folder of 60 files
+    # lost over_descriptive_name while a folder of 10 kept it: the side with more files scored lower.
+    name = b"def handle_user_authentication_request_for_cleaning():\n    return 1\n"
+    fill(tmp_path, "ai", *[name] * 60, ext=".py")
+    fill(tmp_path, "human", *[name] * 10, ext=".py")
+    assert (
+        bc.measure(tmp_path, "ai", "code").scores
+        == [bc.measure(tmp_path, "human", "code").scores[0]] * 60
+    )
+    assert bc.measure(tmp_path, "human", "code").scores[0] > 0
+
+
+def test_all_mode_reports_text_then_code(tmp_path, capsys):
+    fill(tmp_path, "human", *[HUMAN] * 10)
+    fill(tmp_path, "ai", *AI_SPREAD)
+    fill(tmp_path, "human", *CODE_HUMAN, ext=".py")
+    fill(tmp_path, "ai", *CODE_AI, ext=".py")
+    code, out, _ = run(capsys, "compare", "--dir", tmp_path, "--mode", "all")
+    assert code == 0
+    assert out.index("modo: text") < out.index("modo: code")
+    assert out.count("recomendação:") == 2 and out.count("AUC:") == 2
+
+
+def test_all_mode_runs_both_and_fails_if_either_fails(tmp_path, capsys):
+    fill(tmp_path, "human", *[HUMAN] * 10)
+    fill(tmp_path, "ai", *AI_SPREAD)  # text is fine; there is no code at all
+    code, out, err = run(capsys, "check", "--dir", tmp_path, "--mode", "all")
+    assert code == 1
+    assert "modo: text" in out and "modo: code" in out
+    assert "faltam 10 arquivo(s) em human" in err
+
+
+def test_an_unknown_mode_is_a_usage_error(tmp_path):
+    with pytest.raises(SystemExit) as stop:
+        bc.main(["check", "--dir", str(tmp_path), "--mode", "xml"])
+    assert stop.value.code == 2
 
 
 # --- compare -----------------------------------------------------------------------------------
