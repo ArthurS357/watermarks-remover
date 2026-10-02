@@ -378,6 +378,27 @@ def test_all_mode_runs_both_and_fails_if_either_fails(tmp_path, capsys):
     assert "faltam 10 arquivo(s) em human" in err
 
 
+def test_all_mode_exit_is_the_worst_of_the_two_whichever_comes_first(tmp_path, capsys):
+    # review of R13: `codes[-1]` instead of `max(codes)` passed every test; here text fails, code is fine
+    fill(tmp_path, "human", *[HUMAN] * 9)
+    fill(tmp_path, "ai", *AI_SPREAD)
+    fill(tmp_path, "human", *CODE_HUMAN, ext=".py")
+    fill(tmp_path, "ai", *CODE_AI, ext=".py")
+    code, out, err = run(capsys, "compare", "--dir", tmp_path, "--mode", "all")
+    assert code == 1
+    assert "faltam 1 arquivo(s) em human" in err
+    assert out.count("recomendação:") == 1  # code still ran and recommended
+
+
+def test_a_code_corpus_of_clean_files_is_called_degenerate_without_blaming_copies(tmp_path, capsys):
+    # review of R13: clean code scores 0.0 everywhere, the common case, not "copies of one text"
+    fill(tmp_path, "human", *[b"x = 1\n"] * 10, ext=".py")
+    fill(tmp_path, "ai", *[b"y = 2\n"] * 10, ext=".py")
+    code, _, err = run(capsys, "compare", "--dir", tmp_path, "--mode", "code")
+    assert code == 1 and "degenerado" in err
+    assert "cópias do mesmo texto" not in err and "nenhum sinal" in err
+
+
 def test_an_unknown_mode_is_a_usage_error(tmp_path):
     with pytest.raises(SystemExit) as stop:
         bc.main(["check", "--dir", str(tmp_path), "--mode", "xml"])

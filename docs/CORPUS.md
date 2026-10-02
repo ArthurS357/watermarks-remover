@@ -161,7 +161,9 @@ Regras do corpus de código, além das de cima:
   o tamanho (linhas de código, número de funções) dos dois lados.
 - Cada arquivo é pontuado sozinho, como um projeto pequeno. O detector só liga alguns sinais
   (`over_descriptive_name`) em projetos pequenos, e decidir isso pelo número de arquivos da pasta
-  fazia o lado maior pontuar menos. Os sinais que dependem de um `pyproject.toml` (piso do Python)
+  fazia o lado maior pontuar menos. Isso liga `over_descriptive_name` em todo arquivo, o que não é o
+  que o detector faz numa árvore com mais de 50 arquivos: o corpus mede a configuração de projeto
+  pequeno. Os sinais que dependem de um `pyproject.toml` (piso do Python)
   ficam quietos num corpus solto, por não haver um.
 - **TS/TSX/JS/JSX não entram.** Os sinais deles não emitiram nada em 30 arquivos reais, com
   tree-sitter ou sem ele, então medir isso seria medir ruído. A detecção em TS/JS fica para uma

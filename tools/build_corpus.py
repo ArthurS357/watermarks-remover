@@ -188,9 +188,14 @@ def compare(corpus: Path, sides: dict[str, Side], kind: str = "text") -> int:
     human, ai = sides["human"].scores, sides["ai"].scores
     d = cohens_d(human, ai)
     if d is None:
+        why = (
+            "nenhum sinal disparou em arquivo nenhum (código limpo pontua 0)"
+            if kind == "code"
+            else "cópias do mesmo texto?"
+        )
         print(
             "erro: corpus degenerado: todos os arquivos de cada pasta têm o mesmo score "
-            "(cópias do mesmo texto?). Sem variância não há d nem AUC que valham.",
+            f"({why}). Sem variância não há d nem AUC que valham.",
             file=sys.stderr,
         )
         return 1
