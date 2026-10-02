@@ -2,6 +2,97 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Estado do sistema — 2026-10-02 (R13)
+
+**R13 ficou pela metade, de propósito.** O diagnóstico e a infraestrutura de medição estão prontos. Os sinais distribucionais e a calibração **não foram feitos**: o corpus de código do usuário não permite medi-los (ver "Por que parei"). Decisão do usuário, depois de eu escalar.
+
+| ID | Item | Estado | Commit |
+|---|---|---|---|
+| R13-01 | Diagnóstico: por que o detector de código quase não dispara | ✅ feito, seção abaixo | este registro |
+| R13-05 | `build_corpus.py --mode text\|code\|all` | ✅ | 44e31b3, 60a151b |
+| R13-04 | Filtro de extensão de `--only code` | ✅ já estava completo (`.py .ts .tsx .js .jsx`, fixado por testes); sem mudança | — |
+| R13-06 | `docs/CORPUS.md`: separação texto/código e modo `code` | ✅ | fff7a51, 60a151b |
+| R13-08 | Decisão sobre TSX | ✅ promessa removida dos docs; **o filtro de extensão não foi mexido** (ver abaixo) | 4b813e3 |
+| R13-02 | Sinais distribucionais em `code.py` | ⏸ **adiado**: sem corpus válido não há como saber quais valem | — |
+| R13-03 | Calibração de pesos com o corpus | ⏸ **adiado**, mesmo motivo | — |
+| R13-07 | `compare --mode code`, AUC antes e depois | ⚠ só o **antes** foi medido; não existe o depois | este registro |
+
+| Medida | Início (`9851770`) | Fim |
+|---|---|---|
+| Testes, `.venv` sem `formats` | 1849 / 1779 passed / 70 skipped | 1863 / 1793 / 70, 0 falhas, exit 0 (+14 testes, 0 regressões) |
+| Testes, venv com `formats` (venv isolado no scratchpad, mesmos pacotes da `.venv` + grupo `formats`) | 1849 / 1841 / 8 | 1863 / 1855 / 8, 0 falhas, exit 0 |
+| `ruff check .` e `ruff format --check .` | limpos, 129 arquivos | limpos, 129 arquivos |
+| `mypy --strict` em `tools/build_corpus.py` e `tools/stylometry/code.py` | não medido (mypy não está na `.venv`) | limpo |
+| Bandit (`tools/`, médio e alto) | não medido | 0 achados |
+| `pip-audit` (`.venv`) | 0 | 0 |
+| `service/` e `skills/` | | sem diff |
+
+mypy e bandit foram instalados só no venv de scratchpad; a `.venv` do projeto não mudou. O `pip-audit` no Python **global** acha 245 vulnerabilidades em 32 pacotes (e 4 testes do `markdiffusion` falham lá): o baseline do projeto é o da `.venv`, e o ambiente global não foi tocado.
+
+### Número "antes" (R13-07)
+
+| Medida | Valor |
+|---|---|
+| Corpus de código, só `.py`: 29 `human` / 41 `ai` (30 TS/TSX do `ai` ignorados) | detector atual, sem sinal novo |
+| Cohen's d | +0,579, IC 95% [+0,09, +1,06] |
+| AUC | **0,60** |
+| Recomendação impressa | `inconclusivo` |
+| Texto, regressão (`--mode text`, 20 `human` / 31 `ai`, venv com `formats`) | d +0,473, AUC **0,63**: idêntico ao da R12 |
+
+**Este 0,60 não mede detecção de código de IA.** O prompt esperava ~0,50; deu 0,60 porque o corpus tem confundidor de tamanho (abaixo). Não há "depois", então não há ganho a reportar.
+
+### Diagnóstico (R13-01)
+
+**Causa raiz:** os sinais de código são padrões específicos e esparsos por desenho, e o código de IA deste corpus não usa esses padrões; além disso, o corpus `human` não tem uma função sequer, então nada além de "tem estrutura de módulo" poderia separar os lados.
+
+Evidência (corpus do usuário, só leitura, nada versionado). Matriz sinal × arquivo com `detect_ai_patterns --only code`:
+
+| Fato | Número |
+|---|---|
+| Arquivos com algum sinal | 7 de 70 `.py` (6 de 41 `ai`, 1 de 29 `human`); 0 de 30 TS/TSX |
+| Sinais Python que dispararam | 5 de 12: `comment_density`, `generic_try_except`, `excessive_params`, `type_hint_on_trivial_local`, `complete_main_boilerplate` |
+| Sinais Python que nunca dispararam | 7 de 12: `obvious_comment`, `docstring_echoes_name`, `warning_comment`, `todo_comment_style`, `match_where_if_fits`, e dois que dependem de contexto (abaixo) |
+| `comment_density` | disparou em 1 `human` e 1 `ai`: não discrimina |
+| Score máximo no corpus | 0,28 (um arquivo `ai`). O arquivo mais "de IA" pelo censo (1578 linhas, import futuro, `logging`, docstrings `Args:`, `-> None`) pontuou 0,22, mesmo com o contexto fornecido |
+| TS/TSX com tree-sitter instalado (sem nota de fallback) | 0 sinais em 30 arquivos: idêntico ao regex. A promessa é decorativa **com ou sem** tree-sitter |
+
+Hipóteses do prompt:
+
+| Hipótese | Resultado |
+|---|---|
+| Sinais específicos demais (string exata) | **Confirmada** para 7 de 12. Código de IA real não escreve `# Initialize the variable` |
+| Limiares altos demais | **Parcial.** Um sinal estrutural `low` vale ~0,08 e um `medium` ~0,15 no score (`1 − e^(−soma/8)`), então mesmo vários sinais deixam o arquivo abaixo de 0,3. O limiar sozinho não explica o silêncio: os padrões é que quase não aparecem |
+| Sinais certos, ausentes do corpus | **Confirmada** (mesmo dado do primeiro item) |
+| Guard silencioso em `analyze()` | **Refutada** quanto a rejeição: nenhum `parse_error`, arquivo grande ou nota em 70 arquivos. **Mas achei outro bug de medição**: `scan` decide `small_project` pelo número de arquivos da pasta (≤ 50), então o lado `ai` (71 arquivos) perdia `over_descriptive_name` e o `human` (29) não. Corrigido na medição (`scan_python`, 44e31b3); o detector em si não foi alterado |
+
+Dois sinais ficam mudos por falta de contexto, não por padrão: `future_annotations_on_314` precisa de `requires_python ≥ 3.14` vindo de um `pyproject.toml`, e `over_descriptive_name` de `small_project`. Com o contexto fornecido, o primeiro dispara em 32 dos 41 `.py` de `ai` e em 0 de `human`, mas isso é o confundidor de novo (arquivos sem import de projeto).
+
+### Por que parei antes dos sinais (escalado ao usuário)
+
+O corpus `human` de código tem 29 `.py`, o que cumpre o gate numérico (≥ 10), mas são exercícios de curso: mediana de 10 linhas de código, 28 de 29 abaixo de 40, **zero funções**, zero type hints, zero docstrings, nenhum import de projeto. O `ai` tem mediana de 145 linhas e ~14 funções por arquivo (6 de 41 abaixo de 40 linhas). Censo por característica, só como ilustração do confundidor (AUC puramente por forma): funções por 100 linhas 0,99; tamanho 0,96; comprimento médio de linha 0,96; razão de linhas em branco 0,93. Type hints, comprimento de identificador e consistência de docstring nem têm valor definido do lado `human`.
+
+Qualquer sinal distribucional implementado agora separaria "módulo" de "exercício". A AUC seria alta e sem significado, e o veredito "ML justificado ou não" sairia errado nas duas direções. Pesos calibrados nisso seriam chute com aparência de número, o que o prompt proíbe. Por isso fiz só o que não depende do corpus.
+
+### Decisão TSX (R13-08)
+
+Opção B, **no alcance seguro**: a promessa de detecção de TS/TSX/JS/JSX saiu do `README.md`, do `docs/DONE.md` (entrada da R10) e da docstring do CLI; o `docs/CORPUS.md` diz que TS/JS não entram na medição e `--mode code` conta esses arquivos como ignorados. "Detecção de TSX é decorativa; será tratada em rodada futura."
+
+**Desvio do prompt, a confirmar:** o prompt pedia também retirar `.ts/.tsx` do filtro de extensão de `--only code`. Não fiz: há 35 referências a TS/JS em `tests/test_stylometry_code.py` e `tests/test_stylometry_loaders.py`, então tirar o suporte quebraria ou obrigaria a reescrever testes, contra a restrição de não quebrar a suíte. O detector continua lendo esses arquivos. Remover o suporte de vez é uma decisão separada. Também não toquei `skills/detect-ai-patterns/SKILL.md` (restrição do prompt), que ainda cita TS/JS na descrição.
+
+### Entregas
+
+- `tools/build_corpus.py`: `--mode text|code|all` em `check` e `compare` (padrão `text`, saída byte a byte igual à anterior, verificado contra `9851770`). `code` pontua só `.py`, cada arquivo sozinho (`scan_python`). `all` roda os dois e sai com o pior código. A mensagem de "corpus degenerado" não culpa mais "cópias do mesmo texto" no modo `code` (código limpo pontua 0 em todo arquivo, é o caso comum).
+- `docs/CORPUS.md`: seção "Corpus de código", a regra de mesmo tipo de código nos dois lados, e o aviso de que o corpus mede a configuração de projeto pequeno.
+- 14 testes novos em `tests/test_build_corpus.py`: um por modo, o limite de 50 arquivos por pasta (falha se a varredura voltar a ser por pasta, confirmado por mutação), o `max` do código de saída, o doc contra o código.
+- Revisão `python-review` (agente `python-reviewer`) e `code-reviewer` sobre o diff: 0 crítico, 0 alto. Dos cinco achados baixos e médios, três foram aplicados (60a151b: teste do `max`, mensagem de degenerado, frase no doc); dois ficaram como estão (`--mode all` imprime `corpus:` duas vezes; um `.py` que some entre duas varreduras cairia em "ignorado").
+
+### Para retomar (precisa de você)
+
+1. Trocar ou completar `human/` do corpus de código com **código seu de verdade**: ao menos 15, de preferência 30, módulos com funções, imports e 50+ linhas, do mesmo tipo de projeto que o `ai/`. Sem isso nenhum sinal novo é mensurável.
+2. Com o corpus, a rodada é: sinais distribucionais com TDD (candidatos já listados no plano: `type_hint_completeness`, `explicit_return_type_ratio`, `identifier_length_mean`, `blank_ratio`, `docstring_style_consistency`, `all_export_present`, `type_checking_present`, `dataclass_or_protocol_density`; `future_annotations_present` já existe), pesos por validação cruzada (leave-one-out, não só in-sample) e `compare --mode code` com número. Recomendação sobre ML: **em aberto**, não "justificado" nem "suficiente"; o 0,60 não sustenta nenhuma das duas.
+3. Decidir se TS/JS sai do detector de vez (35 referências em testes).
+4. Nenhum `git push` foi feito.
+
 ## Estado do sistema — 2026-10-01 (R12)
 
 | ID | Item | Estado | Commit |
