@@ -1,6 +1,59 @@
 # TODO — watermarks-remover
 
-## Rodada R12 — 2026-10-01 — Fechar os gaps restantes
+## Rodada R13 — 2026-10-02 — Corrigir a detecção de código
+
+Em andamento. Plano escrito antes de qualquer edição. O corpus de texto deu `d = 0,473`, `AUC = 0,63`
+(R12). O de código quase não emite sinal: 3 de 61 arquivos dispararam, e o único sinal que disparou
+(`comment_density`) não discrimina. Sem sinal em código, qualquer decisão sobre ML é chute. Esta
+rodada primeiro **diagnostica** o silêncio, depois adiciona sinais estatísticos, calibra pesos com o
+corpus real e mede a AUC com `build_corpus.py compare --mode code`. TSX/JS ficam fora. Não toca
+`service/` nem as skills. Nenhum `git push`. O corpus é do usuário: só leitura, nunca versionado.
+
+### Baseline (FASE 0, HEAD `9851770`)
+
+| Medida | Valor | Esperado |
+|---|---|---|
+| `pytest` (`.venv`, Python 3.14.4, sem `formats`) | 1849 coletados / **0 falhas / 70 skipped**, exit 0 | bate (1849/70) |
+| `ruff check .` / `ruff format --check .` | limpos, 129 arquivos | bate |
+| `pip-audit` (`.venv`) | 0 vulnerabilidades | bate |
+| Corpus de código (`watermarks-corpus-code`) | `human/`: 29 `.py`. `ai/`: 41 `.py` + 29 `.tsx` + 1 `.ts` | `human` ≥ 10 `.py`: passa o gate |
+
+Nota de método: a primeira medição rodou no Python global (`py`), onde o `pip-audit` achou 245
+vulnerabilidades em 32 pacotes e 4 testes do `markdiffusion` falharam. O baseline do projeto é o da
+`.venv`, como nas rodadas anteriores; o ambiente global não é do projeto e não foi tocado.
+`build_corpus.py check` hoje devolve `0 arquivos, 29 ignorado(s)` em `human` e `0 / 71` em `ai`
+porque `measure()` fixa `only="text"`: é o gap R13-05, não um corpus vazio.
+
+### Plano
+
+Ordem: R13-01 (diagnóstico, só leitura) → R13-05 e R13-04 (infraestrutura para medir) → R13-02
+(sinais, TDD) → R13-03 e R13-07 (calibração e medição) → R13-08 e R13-06 (decisão TSX e docs). O
+script de medição vem antes dos sinais para que "antes" e "depois" saiam da mesma régua.
+
+| ID | Gap | Decisão preliminar | Arquivos | Critério de sucesso |
+|---|---|---|---|---|
+| R13-01 | Detector de código quase não emite sinal | Diagnosticar com matriz sinal × arquivo e testar as 4 hipóteses antes de escrever sinal | nenhum (só leitura) | Relatório com comando e saída; causa raiz em uma linha; hipóteses confirmadas e refutadas listadas |
+| R13-05 | `build_corpus.measure` fixa `only="text"` | `--mode text\|code\|all` (default `text`), em `check` e `compare`; `all` imprime duas medições separadas | `tools/build_corpus.py`, `tests/test_build_corpus.py` | `check --mode code` conta os `.py` do corpus; `text` sem `--mode` continua byte a byte igual |
+| R13-04 | Filtro de extensão de `--only code` | O filtro já existe (`loaders.format_of`); verificar `.py .ts .tsx .js .jsx`, completar só se faltar. A decisão do R13-08 pode tirar `.ts/.tsx` do corpus de medição | `tools/detect_ai_patterns.py`, `tools/stylometry/loaders.py` | Teste mostra o conjunto de extensões aceito por `--only code`; sem mudança se já estiver completo |
+| R13-02 | Só sinais de padrão exato; faltam sinais distribucionais | Implementar os candidatos que o diagnóstico sustentar, como categoria `metric` e `line=None`. `future_annotations_present` já existe (`future_annotations_on_314`): não duplicar | `tools/stylometry/code.py`, `tools/stylometry/__init__.py`, `tests/test_stylometry_code.py`, fixtures | Positivo e negativo por sinal; `ai_typical` > `human_typical` em score; cobertura 100% em `code.py` |
+| R13-03 | Pesos nunca calibrados contra corpus | Pesos e limiares definidos pelo corpus real, **com validação cruzada** (leave-one-out), não só in-sample | `tools/stylometry/__init__.py`, `tools/stylometry/code.py` | Pesos finais e AUC in-sample e fora-da-amostra documentados |
+| R13-07 | Não há AUC de código | `compare --mode code`; regressão logística rápida só para ranquear sinais | script em scratchpad, `docs/DONE.md` | AUC antes e depois como número; recomendação: suficiente, ML justificado ou zona cinzenta |
+| R13-08 | Fallback regex de TSX é decorativo | Opção B: remover a promessa de TSX do `DONE.md` e do `README.md`; "tratado em rodada dedicada". Confirmo com a matriz do R13-01 antes | `docs/DONE.md`, `README.md`, possivelmente `detect_ai_patterns.py` | Nenhum documento promete detecção de TSX; decisão registrada como consciente |
+| R13-06 | `docs/CORPUS.md` só descreve texto | Documentar modo `code`, a separação texto/código e o fluxo | `docs/CORPUS.md`, `tests/test_build_corpus.py` | O teste que fixa os números do doc contra as constantes continua verde e cobre o novo modo |
+
+Blocos de commit: plano (`docs(todo)`) → sinais (`fix(stylometry)`) → pesos (`feat(stylometry)`) →
+`--mode` (`feat(corpus)`) → `docs/CORPUS.md` → TSX no `DONE` → registro final (`docs(done)`). TDD:
+teste vermelho, código, verde, `ruff`, suíte completa a cada bloco.
+
+### Riscos
+
+- **Calibrar e medir no mesmo corpus infla a AUC.** Com 29 e 41 arquivos e ~10 candidatos a sinal, é fácil ajustar ruído. Reporto a AUC in-sample e a de leave-one-out lado a lado, e a que vale é a segunda.
+- **Confusão de tema e tamanho.** Se `ai/` tem arquivos mais longos ou de outro assunto, um sinal "separa" medindo tamanho. Confiro comprimento e proporção de `.py` por lado antes de aceitar um sinal.
+- **O corpus `ai/` foi escrito por vários modelos e `human/` é de uma pessoa só.** Um sinal pode separar autor, não IA. O resultado vale para este corpus.
+- **Quase todos os 16 sinais atuais são esparsos por desenho**: dispararem pouco não prova bug. O diagnóstico decide antes de eu mexer em limiar.
+- **Regressão em texto.** Os sinais novos ficam em `code.py` e só entram para `kind == "code"`. A AUC de texto é remedida e tem de ficar em 0,63.
+- **Suíte de 1849 testes.** Mexer em `WEIGHT`/`CATEGORY` toca texto também; qualquer peso novo é só para sinais novos.
+
 
 Concluída em 2026-10-01. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-10-01-r12). O plano
 abaixo é o que foi escrito antes de qualquer edição (c120491); o que mudou na execução está em
