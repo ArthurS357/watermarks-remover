@@ -2,7 +2,9 @@
 
 ## Rodada R13 — 2026-10-02 — Corrigir a detecção de código
 
-Em andamento. Plano escrito antes de qualquer edição. O corpus de texto deu `d = 0,473`, `AUC = 0,63`
+**Parcial, em 2026-10-02.** Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-10-02-r13). Feitos: R13-01, 04, 05, 06 e 08. **Pendentes: R13-02 (sinais), R13-03 (calibração) e o "depois" do R13-07**, bloqueados pelo corpus `human` de código (exercícios sem função); ver "Ajustes durante a execução", no fim da seção. O plano abaixo é o que foi escrito antes de qualquer edição (bc92fe1).
+
+O corpus de texto deu `d = 0,473`, `AUC = 0,63`
 (R12). O de código quase não emite sinal: 3 de 61 arquivos dispararam, e o único sinal que disparou
 (`comment_density`) não discrimina. Sem sinal em código, qualquer decisão sobre ML é chute. Esta
 rodada primeiro **diagnostica** o silêncio, depois adiciona sinais estatísticos, calibra pesos com o
@@ -53,6 +55,20 @@ teste vermelho, código, verde, `ruff`, suíte completa a cada bloco.
 - **Quase todos os 16 sinais atuais são esparsos por desenho**: dispararem pouco não prova bug. O diagnóstico decide antes de eu mexer em limiar.
 - **Regressão em texto.** Os sinais novos ficam em `code.py` e só entram para `kind == "code"`. A AUC de texto é remedida e tem de ficar em 0,63.
 - **Suíte de 1849 testes.** Mexer em `WEIGHT`/`CATEGORY` toca texto também; qualquer peso novo é só para sinais novos.
+
+### Ajustes durante a execução
+
+O plano acima não foi reescrito: estas são as diferenças entre ele e o que saiu.
+
+| # | Plano | Execução | Motivo e commit |
+|---|---|---|---|
+| A1 | Riscos: "confiro comprimento e proporção por lado antes de aceitar um sinal" | A conferência achou o confundidor logo no diagnóstico: `human` = 29 exercícios (mediana 10 linhas, **0 funções**), `ai` = mediana 145 linhas, ~14 funções. R13-02, R13-03 e o "depois" do R13-07 **adiados** | Escalado ao usuário, que escolheu fazer só o que independe de corpus. Sinais ou pesos calibrados nesse corpus separariam "módulo" de "exercício" |
+| A2 | R13-01: 4 hipóteses | Uma quinta causa, fora do prompt: `scan` decide `small_project` pelo número de arquivos da pasta, então o lado maior (71 arquivos) perdia `over_descriptive_name` e o menor (29) não | Corrigido na medição (`scan_python`, cada arquivo sozinho), não no detector. 44e31b3 |
+| A3 | R13-08 opção B: tirar `.ts/.tsx` do filtro de `--only code` | Promessa removida de README, DONE e docstring do CLI; `--mode code` conta TS/JS como ignorado; **filtro não mexido** | 35 referências a TS/JS em testes; removê-las quebraria a suíte. Medi com tree-sitter instalado (venv isolado): também 0 sinais em 30 arquivos. 4b813e3 |
+| A4 | R13-04: completar o filtro se faltar | Não faltava; já fixado por `test_format_of_follows_the_extension` | Sem commit |
+| A5 | Fase 8: `mypy --strict`, `bandit` | Não estão na `.venv`; instalados num venv de scratchpad, que também serviu à suíte com `formats` | A `.venv` do baseline não mudou |
+| A6 | Fase 8: `code-reviewer` e `python-review` | Rodados (agente `python-reviewer`): 0 crítico, 0 alto. Três achados aplicados | 60a151b |
+| A7 | Baseline: "1849/70" | Medido na `.venv`: 1849 / 70 skipped, 0 falhas. No Python global saíram 245 vulnerabilidades e 4 falhas, que são do ambiente global | Rodei no interpretador errado primeiro e refiz na `.venv` |
 
 
 Concluída em 2026-10-01. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-10-01-r12). O plano
