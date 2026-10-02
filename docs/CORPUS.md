@@ -36,8 +36,9 @@ Em Linux e macOS a pasta temporária padrão é compartilhada entre usuários da
 - No mínimo 10 arquivos em cada pasta. Com 30 ou mais por pasta o resultado fica estável; abaixo
   disso o `compare` avisa.
 - Formatos: `.md`, `.txt` e `.html`. `.docx` e `.pdf` só entram com o grupo `formats` instalado. Código
-  não conta: o corpus é de prosa. Arquivo de outra extensão (`.rst`, `.markdown`) também não é lido, e
-  o `check` diz quantos foram ignorados, para o n que você vê não surpreender.
+  não conta neste modo: o corpus é de prosa (para código, veja "Corpus de código" abaixo). Arquivo de
+  outra extensão (`.rst`, `.markdown`) também não é lido, e o `check` diz quantos foram ignorados,
+  para o n que você vê não surpreender.
 - Mesmo assunto e tamanho parecido nos dois lados. Se um lado só tem textos curtos e técnicos, o
   detector mede o tema, não o estilo.
 - Nada de texto misto. Um rascunho de modelo que você reescreveu não é de nenhum dos dois lados.
@@ -128,6 +129,44 @@ qualquer treino, descarte as causas baratas: pastas trocadas (d negativo), assun
 diferentes entre os lados, menos de 30 arquivos por pasta. Um corpus pessoal de dezenas de arquivos
 é pequeno demais para treinar um modelo que generalize; o próximo passo é juntar mais texto e medir
 de novo, não treinar.
+
+## Corpus de código
+
+Prosa e código são medidos separadamente, com `--mode`. Comparar a pontuação de um texto com a de um
+arquivo `.py` é comparar laranjas com bananas: os sinais, os pesos e até a faixa de scores são
+outros, então os dois nunca entram no mesmo d e na mesma AUC.
+
+| `--mode` | O que mede | O que ignora (o `check` conta) |
+|---|---|---|
+| `text` (padrão) | `.md`, `.txt`, `.html` (e `.docx`, `.pdf` com `formats`) | código e outras extensões |
+| `code` | só `.py` | prosa, `.ts`, `.tsx`, `.js`, `.jsx` e outras extensões |
+| `all` | os dois, um depois do outro, com `== modo: text ==` e `== modo: code ==` | o que cada modo ignora |
+
+```powershell
+py tools\build_corpus.py check   --dir D:\corpus-codigo --mode code
+py tools\build_corpus.py compare --dir D:\corpus-codigo --mode code
+```
+
+Sem `--mode` o comportamento é o de antes. O mesmo `--dir` serve aos dois tipos (cada modo lê o seu e
+conta o resto como ignorado), mas uma pasta de corpus por tipo é mais fácil de conferir. Com `all`,
+o código de saída é o pior dos dois.
+
+Regras do corpus de código, além das de cima:
+
+- No mínimo 10 `.py` em cada pasta, e 30 ou mais para o resultado ficar estável.
+- **Mesmo tipo de código nos dois lados.** É a regra que mais pesa. O score depende de funções, type
+  hints, docstrings e tamanho: se `human\` tem scripts de 10 linhas sem uma função e `ai\` tem módulos
+  de 200 linhas, qualquer sinal "separa", porque mede a diferença entre exercício e módulo, e a AUC
+  sai alta sem dizer nada sobre IA. Antes de medir, confira no `check` a faixa de scores e compare
+  o tamanho (linhas de código, número de funções) dos dois lados.
+- Cada arquivo é pontuado sozinho, como um projeto pequeno. O detector só liga alguns sinais
+  (`over_descriptive_name`) em projetos pequenos, e decidir isso pelo número de arquivos da pasta
+  fazia o lado maior pontuar menos. Os sinais que dependem de um `pyproject.toml` (piso do Python)
+  ficam quietos num corpus solto, por não haver um.
+- **TS/TSX/JS/JSX não entram.** Os sinais deles não emitiram nada em 30 arquivos reais, com
+  tree-sitter ou sem ele, então medir isso seria medir ruído. A detecção em TS/JS fica para uma
+  rodada dedicada. O `detect_ai_patterns.py` continua lendo esses arquivos, mas sem promessa de
+  cobertura.
 
 ## Limites
 

@@ -469,6 +469,15 @@ def test_the_procedure_quotes_the_numbers_the_code_uses():
     assert f"| menos de {pt(bc.D_MARGINAL)}, inclusive negativo | `{bc.ML}` |" in doc
 
 
+def test_the_procedure_documents_every_mode_and_what_code_mode_leaves_out():
+    doc = (ROOT / "docs" / "CORPUS.md").read_text(encoding="utf-8")
+    for mode in (*bc.KINDS, "all"):
+        assert f"| `{mode}`" in doc
+    assert "--mode code" in doc and "== modo: text ==" in doc and "== modo: code ==" in doc
+    assert "TS/TSX/JS/JSX não entram" in doc
+    assert "detect_ai_patterns.py" in doc and "detect_ai-patterns" not in doc
+
+
 # --- as a script -------------------------------------------------------------------------------
 
 
