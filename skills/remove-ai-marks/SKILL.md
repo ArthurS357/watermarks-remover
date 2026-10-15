@@ -348,6 +348,14 @@ docker run --rm -v "$(pwd)/src:/data:ro" watermarks-remover \
 
 Or against a local checkout of the repo: `python3 service/scripts/audit_dir.py DIR --json`.
 
+**Notas de uso medidas (CodeQuest, Windows + Git Bash, 503 arquivos):**
+
+- **`watermarks-server` não está no PATH do Git Bash.** O launcher é `watermarks-server.cmd` na raiz do repositório (`$WATERMARKS_REPO`, padrão `E:\Projetos\Scripts\watermarks-remover`). Suba pelo PowerShell: `& "$repo\watermarks-server.cmd" --wait 60` (exit 0 = no ar). Depois `GET /readyz`: `degraded` só por falta de `c2patool` é aceitável para Layer A e metadados.
+- **O audit não lê `.ts`, `.tsx`, `.mjs` nem `.example`.** Eles saem como `kind: "unknown"` (`unrecognized format; not scanned`): no CodeQuest foram 203 de 503, incluindo todo o frontend. `.py` e `.md` entram como `text` e `markdown`. Para fonte de frontend, faça uma varredura própria de Unicode (categorias `Cf` e `Co`, NBSP, travessões) e diga ao usuário que o audit não cobriu aquilo.
+- **Saída gerada gera achado.** O audit já pula `.next`, `node_modules`, `dist`, `build` e toda pasta que começa com ponto, mas `frontend/coverage/` entra. Use `--skip coverage` para não gastar tempo nem acusar arquivo que será regerado. Os 2 achados do CodeQuest em `coverage/` eram travessões de HTML gerado: nada a editar. Arquivo acima de 1 MB vira `files_skipped` e força exit 3 (parcial), que tem precedência sobre o 1.
+- **Exit 1 não é problema grave.** Basta um travessão (`em_dash`, `probable`) em arquivo comum para dar "actionable". Leia `findings_by_confidence` antes de reportar: `confirmed: 0` com marcas de IA zeradas (`with_c2pa`, `with_ai_metadata`) significa repositório limpo.
+- **Layer B é decisão do usuário, não passo automático.** Em trabalho acadêmico ou sujeito a divulgação, a reescrita estatística muda a aparência de autoria sem mudar o conteúdo. Ofereça, mas pergunte, e não a aplique em lote nos docs do projeto.
+
 Audit exit codes (same in `--json`, `--sarif` and human output): `0` no
 actionable findings, `1` actionable findings, `2` usage/refusal error,
 `3` **partial scan** (some files or URLs could not be scanned — treat as

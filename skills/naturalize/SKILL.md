@@ -139,6 +139,16 @@ O commit 3f7c25d mudou 1234 linhas — e `delve into` segue no código.
 
 Score 0.28 → 0.04 (delta −0.24, efetividade `medium`, confiança `low`: texto curto). O hash, o número e o código inline passaram intactos. O travessão da última linha ficou porque um só está abaixo do gate do detector, e `delve into` ficou porque está entre crases.
 
+## Quando aplicar só em parte (`--signals`)
+
+Em documento de requisitos, ficha ou referência, `bold_lead_in` é o formato (`**Descrição:** ...`, `**Pré-condições:** ...`). Converter 300 desses para `Descrição: ...` derruba o score e piora a leitura: some o ponto de ancoragem visual. Nesses arquivos:
+
+1. rode `--diff-only` primeiro e leia o diff;
+2. prefira `--signals em_dash_density,template_heading,worth_noting,delve_family,hedge_double,fast_paced_world,emoji_heading`, deixando `bold_lead_in` de fora;
+3. ou proteja os campos com `--preserve`.
+
+Medido em `Docs/Integracao_API/Integracao_Judge0.md` (CodeQuest, dry-run, nada gravado): 0,3904 → 0,2811, delta −0,1093, efetividade `medium`, 11 edições. Foi um ganho real, mas veio de 11 negritos e 2 títulos, e o sinal restante (tabela simétrica) é dado. Antes de gravar, confirme que o doc ganha em clareza; se o único benefício é o número, não aplique.
+
 ## Como reportar ao usuário
 
 - Dê `score_before`, `score_after` e `delta` como números, com `effectiveness` e `confidence`.

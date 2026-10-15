@@ -63,11 +63,22 @@ Pastas como `.git`, `.venv`, `node_modules` e caches nunca são varridas, e link
 
 Exit: **0** rodou; **1** caminho inexistente ou `--output` inválido; **2** nada foi analisado.
 
+**Saída de build entra na varredura e domina o ranking.** Só `.git`, `.venv`, `node_modules` e caches ficam de fora; `.next/`, `coverage/`, `dist/`, `build/` e afins não. Num projeto Next.js real (CodeQuest), 850 arquivos foram analisados e os 3 primeiros do ranking eram HTML gerado em `frontend/.next/`; com as pastas ignoradas caiu para 306 arquivos, só fonte. Em repositório com frontend, passe sempre o `--ignore`:
+
+```bash
+detect_ai_patterns.py . --exclude-tests --format md \
+  --ignore 'frontend/.next/*' --ignore 'frontend/coverage/*' --ignore 'frontend/node_modules/*'
+```
+
+Para só a documentação, aponte direto a pasta (`Docs`) em vez de varrer a raiz.
+
 ## Como ler a saída
 
 - **Cada sinal** traz nome, severidade (`low`, `medium`, `high`), valor (quantas vezes aparece, ou a métrica), a linha e um trecho. Sinais de documento (métricas) não têm linha.
 - **Score.** Soma ponderada dos sinais que dispararam (estrutural 2, lexical 1, métrica 0,5; `low`/`medium`/`high` valem 0,33/0,66/1), saturada por `1 − e^(−soma/8)`. Não é probabilidade. Limiares e pesos são escolha da ferramenta, sem calibração contra corpus. `--min-severity` só esconde sinais do relatório: o score usa todos.
 - **Confidence** vem do tamanho da amostra: texto com menos de 150 palavras é `low`, menos de 600 é `medium`; código com menos de 40 linhas é `low`, menos de 200 é `medium`. Regex no lugar do tree-sitter limita a `low`, e PDF a `medium`. **Se a confiança é `low`, diga isso junto do score.**
+- **Forma do `--format json`.** Chaves de topo: `files_scanned`, `by_format`, `by_signal`, `scores`, `skipped`, `disclaimer`. `scores` é um **dicionário** indexado pelo nome do arquivo, não uma lista; cada entrada traz `format`, `kind`, `score`, `confidence`, `signals[]` (`name`, `value`, `severity`, `line`, `snippet`) e `notes`. Para ranquear: `sorted(d["scores"].items(), key=lambda kv: -kv[1]["score"])`. Procurar `files` ou `results` devolve vazio. Em dúvida, use `--format md`, que já vem ordenado.
+- **TS/JS: silêncio não é limpeza.** O próprio `--help` avisa que os sinais de `.ts`/`.tsx` não emitiram nada em 30 arquivos reais. Um frontend sem achados não prova ausência de hábito, só que o detector não enxerga ali.
 - **No relatório `md`:** a tabela "Sinais mais frequentes" (quantos arquivos, severidade máxima) e o "Top 10 arquivos por score", com os sinais de cada um.
 - **`.docx`, `.pdf` e `.html`:** as linhas se referem ao texto extraído, não ao arquivo original. O relatório avisa.
 
@@ -133,6 +144,16 @@ Score 0.69 · confiança medium · python
 3. **Dê o número e a confiança**, nunca só um adjetivo. Score com `confidence: low` é amostra pequena.
 4. **Leia o contexto antes de recomendar.** Um documento técnico pode pontuar alto só por usar negrito de abertura e tabelas, que é o formato dele; código do serviço pode ter função com muitos parâmetros por bons motivos. Isso é falso positivo esperado, não defeito.
 5. **Não acuse.** O resultado nunca é prova sobre quem escreveu, e o uso é sobre o que o usuário produziu.
+
+## Precisa agir? Regra de decisão
+
+Antes de recomendar qualquer reescrita, olhe **quais** sinais puxam o score:
+
+- **Sinais ditados pelo formato** (`bold_lead_in` em requisitos com `**Campo:**`, `comparison_table_symmetry`, `paragraph_uniformity` em lista de requisitos, `template_heading` em doc de "Por que existe"): são o gênero do documento. Score até ~0,4 com esses sinais é **falso positivo esperado**. Diga isso e não proponha mexer.
+- **Sinais de hábito** (`em_dash_density`, `worth_noting`, `delve_family`, `fast_paced_world`, `hedge_double`, comentário óbvio em código): valem uma passada, são baratos de corrigir à mão e melhoram o texto de verdade.
+- Nunca persiga o número como meta. Um score baixo não prova autoria humana, e um alto não prova o contrário. Se o motivo do pedido for esconder o uso de IA de quem exige divulgação (disciplina, edital, plataforma), esse é um problema de política, não de estilo: diga isso em vez de otimizar o score.
+
+Caso medido (CodeQuest, `Docs/`): 8 arquivos com algum sinal, máximo 0,41, os três primeiros todos por formato. Conclusão correta: nada a reduzir.
 
 ## Próximo passo
 

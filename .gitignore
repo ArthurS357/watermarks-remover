@@ -62,4 +62,4 @@
 .figlet/
 posts.md
 *.cleaned.*
-*.bak
+*.bak*
