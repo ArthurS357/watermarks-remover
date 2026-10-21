@@ -8,7 +8,7 @@ _ _ _ ____ ___ ____ ____ _  _ ____ ____ _  _ ____    ____ ____ _  _ ____ _  _ __
 
 <!-- logo: figlet -d .figlet -f cybermedium -w 120 "watermarks-remover" -->
 
-[![CI](https://github.com/guillaumemeyer/watermarks-remover/actions/workflows/ci.yml/badge.svg)](https://github.com/guillaumemeyer/watermarks-remover/actions/workflows/ci.yml)
+[![CI](https://github.com/ArthurS357/watermarks-remover/actions/workflows/ci.yml/badge.svg)](https://github.com/ArthurS357/watermarks-remover/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/guillaumemeyer/watermarks-remover)](https://github.com/guillaumemeyer/watermarks-remover/releases)
 [![Stars](https://img.shields.io/github/stars/guillaumemeyer/watermarks-remover)](https://github.com/guillaumemeyer/watermarks-remover/stargazers)
 [![Forks](https://img.shields.io/github/forks/guillaumemeyer/watermarks-remover)](https://github.com/guillaumemeyer/watermarks-remover/forks)
@@ -24,6 +24,8 @@ Agent skill + stdlib Python service to strip **multi-vendor AI provenance marks*
 Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style (green-list) and keyed-Gumbel / EXP (Aaronson) marks.
 
 **Latest release:** [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0)
+
+> **Origin and historical references.** This repository is a fork of `guillaumemeyer/watermarks-remover`. The Release, Stars and Forks badges, the "Latest release" line, the `ghcr.io/guillaumemeyer/...` images (image table and `compose.yaml`), the pre-commit `repo:` URL and the v0.0.1–v0.5.0 changelog below describe the **upstream**, not this fork, and are kept as historical reference. The stylometry half (`tools/`, `skills/naturalize`, `skills/detect-ai-patterns`) was added in this fork.
 
 Skill path: [`skills/remove-ai-marks/`](skills/remove-ai-marks/)  
 Service path: [`service/`](service/)  
@@ -820,6 +822,15 @@ python tools/measure_skill_effectiveness.py ANTES DEPOIS [--format json|md] \
 - **Formatos.** Texto: `.md .txt .html .docx .pdf`. Código: `.py`. O detector também lê
   `.ts .tsx .js .jsx`, mas **sem promessa de cobertura**: em 30 arquivos TS/TSX reais ele não
   emitiu sinal nenhum, com tree-sitter ou sem. Tratar TS/JS fica para uma rodada dedicada.
+- **Quanto cada sinal pesa (medido em 2026-10-21).** São 21 sinais de texto, mas no corpus
+  pessoal (51 arquivos em português) só 13 dispararam e 8 nunca (`delve_family`,
+  `fast_paced_world`, `hedge_double`, `meta_commentary`, `here_is_why`,
+  `on_the_other_hand_cascade`, `declarative_close`, `tricolon_uniform`). Quatro sinais
+  (`bold_lead_in`, `emoji_heading`, `em_dash_density`, `em_dash_to_comma_ratio`) respondem por
+  cerca de 70% do score do lado IA, e `bold_lead_in` e `emoji_heading` só existem em Markdown
+  (o loader de `.docx` descarta o negrito). Com os `**` retirados do lado IA o AUC do corpus vai de
+  0,63 para 0,49: o score aponta hábito de estilo, **não separa** texto humano de texto de IA.
+  Detalhe e ressalvas (n = 20 e 31, medição única) em `docs/DONE.md`.
 - **Grupo opcional `formats`.** `.docx`, `.pdf` e o tree-sitter (TS/JS) precisam dele. Sem o
   grupo, `.docx`/`.pdf` são pulados com um aviso e TS/JS são analisados por regex, com
   `confidence` no máximo `low`. Instale sem mexer no resto do ambiente:
@@ -975,7 +986,8 @@ não se o texto ficou melhor.
 **Skills.** `skills/naturalize/` e `skills/detect-ai-patterns/` tornam os dois scripts invocáveis
 de qualquer sessão do Claude Code ("humaniza esse texto", "esse texto parece IA?"). O corpo de cada
 uma também é a documentação da ferramenta. Elas acham o repositório por `WATERMARKS_REPO` e, sem
-ela, por `E:\Projetos\Scripts\watermarks-remover`. Para instalá-las em `~/.claude/skills/`:
+ela, pelo caminho padrão do autor (`E:\Projetos\Scripts\watermarks-remover`, só um exemplo: defina
+`WATERMARKS_REPO` na sua máquina). Para instalá-las em `~/.claude/skills/`:
 
 ```bash
 python install_skill.py --skill naturalize --cursor-home ~/.claude

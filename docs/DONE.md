@@ -2,6 +2,17 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Auditoria de medição — 2026-10-21 (sem número de rodada)
+
+Auditoria de leitura mais três experimentos locais, sem commit. Corpus pessoal de texto: 20 `human` (`.docx`) e 31 `ai` (27 `.md` e 4 `.docx`). Nada aqui sustenta decisão de ML: n = 20 e 31, medição única, e escolher o melhor de 13 sinais no mesmo corpus seria ajuste no conjunto de teste.
+
+- **O AUC 0,63 do texto mede formato (G-01).** Com a mesma representação nos dois lados cai: 0,57 (negrito preservado no `.docx` humano) e 0,49 (sem `**`/`__` no lado IA). O loader de `.docx` lê `paragraph.text` e descarta o negrito inline (505 trechos nos 20 documentos humanos; G-19). Converter o `.docx` em `.md` só com o texto extraído não muda nada por construção.
+- **O detector do serviço é outro e não separa o corpus.** `service/scripts/score_stylometry.py` (veio do upstream, PR #68/#69, 2026-08-16) tem AUC **0,43** nas três representações e zero marcadores em 51 arquivos: a lista de frases é só inglês e o corpus é português. Só contam a burstiness e a MATTR, com faixas calibradas para inglês.
+- **A promessa de 21 sinais de texto não se sustenta na prática.** 13 dispararam; 8 nunca. Participação no peso do lado IA (original): `bold_lead_in` 38,5%, `emoji_heading` 13,4%, `paragraph_uniformity` 11,5%, `em_dash_density` 10,0%, `em_dash_to_comma_ratio` 9,6%, `template_heading` 7,6%; o resto soma 9,4%. Sem os `**`: `emoji_heading` 23,3%, os dois `em_dash` 34,0%, `template_heading` 13,3%.
+- **`paragraph_uniformity` dispara mais em humano (11 de 20) que em IA (6 de 31).** Tirá-lo sobe o AUC em +0,17. É corpus específico (textos humanos curtos de parágrafo único) e não é motivo para recalibrar com 51 arquivos.
+- **CI:** o grupo `formats` passou a ser instalado no `ci.yml` e o `pytest` usa `-rs`: 70 pulos viram 8, 1855 passam, 0 falham (local, sem push). `tools/` mede 99% de cobertura.
+- Decisões em aberto: o que fazer com os dois detectores (G-04) está em `Decisoes_Pendentes` do vault.
+
 ## Estado do sistema — 2026-10-02 (R13)
 
 **R13 ficou pela metade, de propósito.** O diagnóstico e a infraestrutura de medição estão prontos. Os sinais distribucionais e a calibração **não foram feitos**: o corpus de código do usuário não permite medi-los (ver "Por que parei"). Decisão do usuário, depois de eu escalar.

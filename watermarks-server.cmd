@@ -23,6 +23,11 @@ REM                                  mesmo se ja estava parado).
 REM
 REM   watermarks-server --help       Este resumo.
 REM
+REM Porta: fixa em 8765. Ela aparece literalmente nas mensagens e na sonda de
+REM saude deste arquivo (busque por 8765). O start-watermarks-server.ps1 aceita
+REM -Port, mas este .cmd nao repassa o parametro: para outra porta, edite os
+REM pontos que citam 8765 e suba o servico direto pelo .ps1 com -Port.
+REM
 REM Instalacao: copie este .cmd para uma pasta do PATH (ex.: %USERPROFILE%\bin).
 REM Se o .ps1 nao estiver ao lado do .cmd, o caminho fixo abaixo e usado.
 REM Editar REPO se o repositorio mudar de lugar.

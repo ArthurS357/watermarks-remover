@@ -28,7 +28,19 @@ jobs:
       - name: Install test deps
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Install formats group
+        # Without it ~62 tests (tree-sitter TS/JS, docx, pdf) skip silently and
+        # a green run says nothing about those paths. `pip install --group`
+        # needs pip >= 25.1, which the 3.12 runner image may not ship. Plain
+        # pip, not `uv sync --group`: that one is an exact sync and would
+        # remove pytest.
+        run: |
+          python -m pip install "pip>=25.1"
+          python -m pip install --group formats
+
       - name: Test
+        # -rs prints every skip with its reason. Do not add -q: pytest.ini
+        # already has it, and a second one hides the pass/skip summary line.
         # Coverage is reported, not gated: a real local measurement came out
         # to ~72%, well under an 80% bar, largely because several CLI entry
         # points (clean_text.py, inspect_file.py, score_synthid.py, ...) are
@@ -38,7 +50,7 @@ jobs:
         # under=80 now would fail every future CI run on a number that
         # doesn't reflect real coverage. Fix the measurement gap first, then
         # gate on the corrected number.
-        run: python -m pytest -q --cov=service/scripts --cov-report=term-missing
+        run: python -m pytest -rs --cov=service/scripts --cov=tools --cov-report=term-missing
 
       - name: Subprocess coverage (make test-cov-subprocess)
         # The only place the target runs through a real `make`. No .venv here,

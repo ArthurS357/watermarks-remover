@@ -7,7 +7,7 @@
 	install-skill install-cursor-text-skill clean
 
 SCRIPTS := service/scripts
-PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
+PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; elif [ -x .venv/Scripts/python.exe ]; then echo .venv/Scripts/python.exe; else echo python3; fi)
 
 test:
 	$(PYTHON) -m pytest

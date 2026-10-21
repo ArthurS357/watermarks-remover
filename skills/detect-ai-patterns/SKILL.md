@@ -1,6 +1,6 @@
 ---
 name: detect-ai-patterns
-description: Analisa texto e código em busca de padrões estilométricos de IA (em-dash denso, bold lead-in, template headings, hedges, docstrings que ecoam o nome da função, comentário óbvio, type hint em local trivial). Determinístico, sem ML. Cobre .md, .txt, .html, .docx, .pdf, .py, .ts, .tsx, .js, .jsx. Use quando o usuário pedir "esse texto parece IA?", "detecta IA nisso", "analisa esse arquivo", "quais hábitos de IA tem aqui", ou invoca /detect-ai-patterns. O resultado é indicativo, não veredito, e nunca diz quem escreveu.
+description: Analisa texto e código em busca de padrões estilométricos de IA (em-dash denso, bold lead-in, template headings, hedges, docstrings que ecoam o nome da função, comentário óbvio, type hint em local trivial). Determinístico, sem ML. Cobre .md, .txt, .html, .docx, .pdf e .py; .ts, .tsx, .js e .jsx são lidos, mas sem validação (nenhum sinal disparou em 30 arquivos TS/TSX reais). Use quando o usuário pedir "esse texto parece IA?", "detecta IA nisso", "analisa esse arquivo", "quais hábitos de IA tem aqui", ou invoca /detect-ai-patterns. O resultado é indicativo, não veredito, e nunca diz quem escreveu.
 ---
 
 # Detect AI patterns: onde o estilo denuncia hábito
@@ -144,6 +144,7 @@ Score 0.69 · confiança medium · python
 3. **Dê o número e a confiança**, nunca só um adjetivo. Score com `confidence: low` é amostra pequena.
 4. **Leia o contexto antes de recomendar.** Um documento técnico pode pontuar alto só por usar negrito de abertura e tabelas, que é o formato dele; código do serviço pode ter função com muitos parâmetros por bons motivos. Isso é falso positivo esperado, não defeito.
 5. **Não acuse.** O resultado nunca é prova sobre quem escreveu, e o uso é sobre o que o usuário produziu.
+6. **O catálogo é maior que o que pesa.** Há 21 sinais de texto, mas num corpus pessoal de 51 arquivos em português só 13 dispararam, e quatro (`bold_lead_in`, `emoji_heading`, `em_dash_density`, `em_dash_to_comma_ratio`) respondem por cerca de 70% do score do lado IA. Dois deles só existem em Markdown. Tirando os `**`, o AUC desse corpus cai de 0,63 para 0,49: **o score não separa humano de IA, só aponta hábito**. Não o apresente como detecção.
 
 ## Precisa agir? Regra de decisão
 

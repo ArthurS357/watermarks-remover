@@ -1,3 +1,8 @@
 [run]
 parallel = true
-source = service/scripts
+# tools/ (stylometry, naturalize, build_corpus) joined in R10 and was left out of
+# the measurement until the 2026-10 audit: with the `formats` group installed it
+# is ~99% covered, so it counts here and in ci.yml (--cov=tools). Reported, not gated.
+source =
+    service/scripts
+    tools
