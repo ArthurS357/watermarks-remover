@@ -18,6 +18,13 @@ DISCLAIMER = (
     "disciplinado e em código com convenções fortes. Uso pessoal — não use para acusar "
     "terceiros."
 )
+# Said at the top of every report: measured on the personal corpus (docs/DONE.md, 2026-10-21).
+EXPERIMENTAL_NOTICE = (
+    "Detector experimental, não validado: num corpus pessoal em português o score não separou "
+    "texto humano de texto de IA (AUC 0,49 a 0,63, conforme o formato). Em texto, `bold_lead_in` "
+    "é o sinal de maior peso e só existe em Markdown; sem ele o score colapsa. Use os sinais "
+    "para revisar, não o score para concluir."
+)
 
 SEVERITIES = ("low", "medium", "high")
 CONFIDENCES = ("low", "medium", "high")

@@ -17,7 +17,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "stylometry"
 sys.path.insert(0, str(TOOLS))
 
 import detect_ai_patterns as cli
-from stylometry import DISCLAIMER, SEVERITIES, isolate, loaders, printable
+from stylometry import DISCLAIMER, EXPERIMENTAL_NOTICE, SEVERITIES, isolate, loaders, printable
 from stylometry_support import in_process
 
 AI_TEXT = (FIXTURES / "text_ai_like.md").read_text(encoding="utf-8")
@@ -83,6 +83,8 @@ def test_json_report_has_the_documented_shape(tree, capsys):
         "scores",
         "skipped",
         "disclaimer",
+        "experimental",
+        "notice",
     }
     assert report["disclaimer"] == DISCLAIMER
     assert report["files_scanned"] == 5
@@ -93,6 +95,18 @@ def test_json_report_has_the_documented_shape(tree, capsys):
     assert entry["confidence"] in ("low", "medium", "high")
     assert set(entry["signals"][0]) == {"name", "value", "severity", "line", "snippet"}
     assert report["by_signal"]["bold_lead_in"]["files"] == 1
+
+
+def test_the_report_says_it_is_experimental_in_json_and_in_markdown(tree, capsys):
+    _, report, _ = run_json(capsys, tree)
+    assert report["experimental"] is True
+    assert report["notice"] == EXPERIMENTAL_NOTICE
+    assert "bold_lead_in" in report["notice"] and "não validado" in report["notice"]
+    _, md, _ = run(capsys, tree, "--format", "md")
+    lines = md.splitlines()
+    assert lines[0] == "# Relatório estilométrico"
+    assert lines[2] == f"> **Experimental.** {EXPERIMENTAL_NOTICE}"  # before the disclaimer
+    assert md.index("Experimental.") < md.index(DISCLAIMER)
 
 
 def test_the_output_never_claims_a_verdict(tree, capsys):

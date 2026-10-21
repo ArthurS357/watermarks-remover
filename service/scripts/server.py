@@ -327,6 +327,15 @@ def _schema(**props: Any) -> dict[str, Any]:
     return props
 
 
+# Additive fields of the stylometry report (`detections[]` with detector "stylometry" in /detect,
+# `report.stylometry` in /inspect). The detector is calibrated for English only.
+STYLOMETRY_NOTE = (
+    "The stylometry entry also carries `language` (en|pt|unknown), `confidence` (low|medium) and, "
+    "when the text is not English, `notice`. The detector is calibrated for English: for any "
+    "other language `confidence` is always `low`."
+)
+
+
 def _file_request(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     schema: dict[str, Any] = {
         "type": "object",
@@ -515,7 +524,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                             type="string", enum=["text", "image", "container", "av", "unknown"]
                         ),
                         "suspicious": _schema(type="boolean"),
-                        "report": _schema(type="object"),
+                        "report": _schema(type="object", description=STYLOMETRY_NOTE),
                     },
                 )
             },
@@ -558,7 +567,10 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                         "kind": _schema(
                             type="string", enum=["text", "image", "container", "av", "unknown"]
                         ),
-                        "detections": _schema(type="array", items=_schema(type="object")),
+                        "detections": _schema(
+                            type="array",
+                            items=_schema(type="object", description=STYLOMETRY_NOTE),
+                        ),
                         "report": _schema(
                             type="object", description="av, container and unknown kinds only"
                         ),
@@ -641,7 +653,8 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                                         enum=["text", "image", "container", "av", "unknown"],
                                     ),
                                     "detections": _schema(
-                                        type="array", items=_schema(type="object")
+                                        type="array",
+                                        items=_schema(type="object", description=STYLOMETRY_NOTE),
                                     ),
                                     "report": _schema(type="object"),
                                     "error": _schema(type="string"),

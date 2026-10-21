@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "service" / "scripts"
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -193,6 +195,30 @@ def test_audit_lib_check_stylometry():
     assert "stylometry" in item
     assert item["stylometry"]["score"] >= 0.65
     assert any("stylometry" in f for f in item["findings"])
+
+
+@pytest.mark.parametrize(
+    ("text", "language"),
+    [
+        ("the tool is not what you think it is, and this is why we have to be careful", "en"),
+        ("a ferramenta não é o que você pensa, e isso é por que ela não prova nada", "pt"),
+        ("x y z", "unknown"),
+        ("the que", "unknown"),
+    ],
+)
+def test_detect_language_hint(text, language):
+    from score_stylometry import detect_language, extract_words
+
+    assert detect_language(extract_words(text)) == language
+
+
+def test_portuguese_report_is_low_confidence_and_keeps_the_legacy_level():
+    from score_stylometry import ENGLISH_ONLY_NOTICE, score_text_stylometry
+
+    pt = "Nesta seção vamos ver como o sistema funciona e por que ele não é perfeito. " * 8
+    d = score_text_stylometry(pt).to_dict()
+    assert (d["language"], d["confidence"], d["notice"]) == ("pt", "low", ENGLISH_ONLY_NOTICE)
+    assert d["confidence_level"] in ("CLEAN", "LOW", "MEDIUM", "HIGH")  # legacy field kept
 
 
 def test_server_capabilities_includes_stylometry():

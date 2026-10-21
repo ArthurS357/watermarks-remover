@@ -137,6 +137,21 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
 
 RE_WORDS = re.compile(r"\b[\w'-]+\b", re.UNICODE)
 
+# Function words that do not exist in the other language ("a", "do", "no" are in both, so they are
+# left out). Only a language hint for the output; the scoring below never reads it.
+_EN_WORDS = frozenset(
+    {"the", "and", "of", "to", "is", "that", "it", "for", "with", "are"}
+    | {"this", "be", "was", "by", "not", "you", "have", "from", "which", "they"}
+)
+_PT_WORDS = frozenset(
+    {"que", "não", "uma", "para", "com", "dos", "das", "os", "em", "por", "mais"}
+    | {"são", "foi", "como", "isso", "ele", "ela", "mas", "ou", "também", "pelo"}
+)
+MIN_LANGUAGE_HITS = 3
+ENGLISH_ONLY_NOTICE = (
+    "This detector is calibrated for English. Results in other languages may be inaccurate."
+)
+
 
 @dataclass
 class MarkerMatch:
@@ -168,9 +183,16 @@ class StylometryReport:
     status: str  # ok | insufficient_length
     findings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    language: str = "unknown"  # en | pt | unknown
+    confidence: str = "low"  # low | medium; never high: the detector is not validated
+    notice: str | None = None  # set when the text is not English
 
     def to_dict(self) -> dict[str, Any]:
+        extra: dict[str, Any] = {"language": self.language, "confidence": self.confidence}
+        if self.notice:
+            extra["notice"] = self.notice
         return {
+            **extra,
             "path": self.path,
             "word_count": self.word_count,
             "sentence_count": self.sentence_count,
@@ -187,6 +209,25 @@ class StylometryReport:
             "findings_confidence": [classify_finding_confidence(f) for f in self.findings],
             "notes": self.notes,
         }
+
+
+def detect_language(words: list[str]) -> str:
+    """``"en"``, ``"pt"`` or ``"unknown"``, from distinctive function words. Output hint only."""
+    en = sum(w in _EN_WORDS for w in words)
+    pt = sum(w in _PT_WORDS for w in words)
+    if max(en, pt) < MIN_LANGUAGE_HITS or en == pt:
+        return "unknown"
+    return "en" if en > pt else "pt"
+
+
+def _calibration(words: list[str], status: str) -> dict[str, Any]:
+    """``language``, ``confidence`` and ``notice`` for the report. The phrase list, the burstiness
+    bands and the MATTR band are tuned for English, so anything else is low confidence."""
+    language = detect_language(words)
+    if language != "en":
+        return {"language": language, "confidence": "low", "notice": ENGLISH_ONLY_NOTICE}
+    long_enough = status == "ok" and len(words) >= 150
+    return {"language": language, "confidence": "medium" if long_enough else "low"}
 
 
 def extract_sentences(text: str) -> list[str]:
@@ -318,6 +359,7 @@ def score_text_stylometry(text: str, path: str = "<text>") -> StylometryReport:
             status="insufficient_length",
             findings=findings,
             notes=notes,
+            **_calibration(words, "insufficient_length"),
         )
 
     # 2. Metric Calculations
@@ -418,6 +460,7 @@ def score_text_stylometry(text: str, path: str = "<text>") -> StylometryReport:
         status="ok",
         findings=findings,
         notes=notes,
+        **_calibration(words, "ok"),
     )
 
 
@@ -437,6 +480,9 @@ def print_human_stylometry_report(report: StylometryReport, explain: bool = Fals
     print(f"Sentence CV:        {cv_display}")
     print(f"Lexical Diversity:  {report.lexical_diversity:.3f} (MATTR)")
     print(f"AI Marker Density:  {report.ai_ngram_density:.3f} / 100 words")
+    print(f"Language:           {report.language} (confidence: {report.confidence})")
+    if report.notice:
+        print(f"Notice:             {report.notice}")
 
     if report.findings:
         print("\nFindings:")

@@ -123,6 +123,70 @@ def test_openapi_includes_detect(conn):
     )
 
 
+PT_TEXT = (
+    "Nesta seção vamos ver como o sistema funciona e por que ele não é perfeito. "
+    "A ferramenta mede o estilo do texto, mas isso não prova quem escreveu, e os "
+    "resultados são apenas uma pista para a revisão que o autor faz com os próprios olhos."
+)
+EN_TEXT = (
+    "The tool measures the style of the text, but that does not prove who wrote it, and "
+    "the results are only a hint for the review that the author does with the own eyes. "
+    "It is not a verdict, and this is what you have to keep in mind when you read it."
+)
+
+
+def _stylometry(body: dict) -> dict:
+    """The stylometry entry of a /detect response, or of the report of an /inspect one."""
+    if "detections" in body:
+        return next(d for d in body["detections"] if d["detector"] == "stylometry")
+    return body["report"]["stylometry"]
+
+
+@pytest.mark.parametrize("path", ["/detect", "/inspect"])
+def test_stylometry_portuguese_is_low_confidence_with_an_english_only_notice(conn, path):
+    status, body = _post(conn, path, {"file": _b64(PT_TEXT.encode()), "name": "nota.txt"})
+    assert status == 200
+    s = _stylometry(body)
+    assert s["language"] == "pt"
+    assert s["confidence"] == "low"
+    assert "calibrated for English" in s["notice"]
+
+
+@pytest.mark.parametrize("path", ["/detect", "/inspect"])
+def test_stylometry_unknown_language_is_also_low_confidence(conn, path):
+    status, body = _post(conn, path, {"file": _b64(b"12345 67890 ."), "name": "n.txt"})
+    assert status == 200
+    s = _stylometry(body)
+    assert (s["language"], s["confidence"]) == ("unknown", "low")
+    assert "notice" in s
+
+
+def test_stylometry_english_has_no_notice_and_keeps_every_legacy_field(conn):
+    status, body = _post(conn, "/detect", {"file": _b64(EN_TEXT.encode()), "name": "n.txt"})
+    assert status == 200
+    s = _stylometry(body)
+    assert s["language"] == "en"
+    assert s["confidence"] in ("low", "medium")  # never "high": the detector is not validated
+    assert "notice" not in s
+    legacy = {
+        "path", "word_count", "sentence_count", "burstiness_cv", "lexical_diversity",
+        "ai_ngram_density", "matched_markers", "score", "confidence_level", "status",
+        "findings", "findings_confidence", "notes", "detector", "available",
+    }  # fmt: skip
+    assert legacy <= set(s)
+
+
+def test_openapi_documents_the_stylometry_language_fields(conn):
+    status, body = _get(conn, "/openapi.json")
+    assert status == 200
+    ok = body["paths"]["/detect"]["post"]["responses"]["200"]["content"]["application/json"]
+    assert "`language`" in ok["schema"]["properties"]["detections"]["items"]["description"]
+    inspect_ok = body["paths"]["/inspect"]["post"]["responses"]["200"]["content"][
+        "application/json"
+    ]
+    assert "`language`" in inspect_ok["schema"]["properties"]["report"]["description"]
+
+
 def test_detect_text_without_detectors(conn):
     payload = {"file": _b64(b"some plain text"), "name": "notes.txt"}
     status, body = _post(conn, "/detect", payload)

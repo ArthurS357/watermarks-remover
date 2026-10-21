@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from stylometry import (
     DISCLAIMER,
+    EXPERIMENTAL_NOTICE,
     SEVERITIES,
     Analysis,
     Signal,
@@ -232,6 +233,8 @@ def render_json(result: Scan, min_severity: str) -> str:
         },
         "skipped": [{"path": p, "reason": r} for p, r in result.skipped],
         "disclaimer": DISCLAIMER,
+        "experimental": True,
+        "notice": EXPERIMENTAL_NOTICE,
     }
     return json.dumps(report, ensure_ascii=False, indent=2) + "\n"
 
@@ -243,7 +246,8 @@ def quote(text: str) -> str:
 def render_md(result: Scan, min_severity: str) -> str:
     files = sorted(result.files.values(), key=lambda f: (-f.score, f.path))
     formats = ", ".join(f"{k} {v}" for k, v in sorted(Counter(f.language for f in files).items()))
-    out = ["# Relatório estilométrico", "", f"> {DISCLAIMER}", ""]
+    out = ["# Relatório estilométrico", "", f"> **Experimental.** {EXPERIMENTAL_NOTICE}", ">"]
+    out += [f"> {DISCLAIMER}", ""]
     out.append(f"- Arquivos analisados: {len(files)}" + (f" ({formats})" if formats else ""))
     if result.skipped:
         out.append(f"- Arquivos pulados: {len(result.skipped)} (lista no fim)")
