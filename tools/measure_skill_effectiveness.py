@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure how far a rewrite moved the stylometric signals of a text or a source file.
+"""Measure how far a rewrite moved the stylometric signals of a text.
 
 ``before`` and ``after`` are two files, or two directories paired by relative path. Both sides go
 through ``detect_ai_patterns`` with the same thresholds, so the delta measures the rewrite and not
@@ -65,22 +65,6 @@ ADVICE = {
     "sentence_length_stddev": "deixe o comprimento das frases variar mais",
     "paragraph_length_stddev": "deixe o comprimento dos parágrafos variar mais",
     "em_dash_to_comma_ratio": "troque parte dos travessões por vírgulas",
-    "docstring_echoes_name": "apague a docstring que repete o nome da função ou diga o que o nome não diz",
-    "obvious_comment": "apague o comentário que repete a linha seguinte ou explique o porquê",
-    "comment_density": "corte os comentários que narram o código e deixe os que explicam uma decisão",
-    "type_hint_on_trivial_local": "tire a anotação de tipo de variável local com valor literal óbvio",
-    "generic_try_except": "capture a exceção específica e trate-a, em vez de engolir tudo com pass",
-    "excessive_params": "agrupe os parâmetros num objeto (dataclass) ou divida a função",
-    "over_descriptive_name": "encurte nomes de quatro palavras ou mais para o que o contexto já diz",
-    "complete_main_boilerplate": "reduza o __main__ a uma chamada; argparse, logging e try/except só se o script precisa",
-    "future_annotations_on_314": "remova o import de __future__ annotations: o projeto exige Python 3.14 ou mais",
-    "match_where_if_fits": "troque o match de dois casos simples por if/else",
-    "as_const_everywhere": "tire o as const de literais primitivos que o compilador já infere",
-    "optional_chaining_overuse": "tire o ?. de valores que não podem ser nulos",
-    "jsdoc_on_trivial_type": "apague o @param de tipo trivial que o TypeScript já diz",
-    "explicit_return_types_on_arrow": "tire o tipo de retorno explícito das arrows inline",
-    "warning_comment": 'remova o "Note:" ou "Important:" sem risco real, ou torne o aviso específico',
-    "todo_comment_style": "troque os TODO(autor): iguais por issues, ou apague os que já foram feitos",
 }
 
 

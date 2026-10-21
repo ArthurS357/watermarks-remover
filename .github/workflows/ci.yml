@@ -29,7 +29,7 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Install formats group
-        # Without it ~62 tests (tree-sitter TS/JS, docx, pdf) skip silently and
+        # Without it the docx and pdf tests skip silently and
         # a green run says nothing about those paths. `pip install --group`
         # needs pip >= 25.1, which the 3.12 runner image may not ship. Plain
         # pip, not `uv sync --group`: that one is an exact sync and would

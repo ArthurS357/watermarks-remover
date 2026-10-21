@@ -69,11 +69,6 @@ def worker_raises(monkeypatch, exc: Exception):
         (".html", ("text", "html")),
         (".docx", ("text", "docx")),
         (".pdf", ("text", "pdf")),
-        (".py", ("code", "python")),
-        (".ts", ("code", "typescript")),
-        (".tsx", ("code", "tsx")),
-        (".js", ("code", "javascript")),
-        (".jsx", ("code", "jsx")),
         (".MD", ("text", "markdown")),
     ],
 )
@@ -81,12 +76,15 @@ def test_format_of_follows_the_extension(suffix, expected):
     assert loaders.format_of(Path(f"file{suffix}")) == expected
 
 
-@pytest.mark.parametrize("name", ["a.exe", "a.png", "README", "a.md.bak", "a.rs"])
+@pytest.mark.parametrize(
+    "name",
+    ["a.exe", "a.png", "README", "a.md.bak", "a.rs", "a.py", "a.ts", "a.tsx", "a.js", "a.jsx"],
+)
 def test_format_of_ignores_everything_else(name):
     assert loaders.format_of(Path(name)) is None
 
 
-# --- plain text and code ----------------------------------------------------------------------
+# --- plain text ----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -94,14 +92,9 @@ def test_format_of_ignores_everything_else(name):
     [
         ("a.md", "text", "markdown"),
         ("a.txt", "text", "text"),
-        ("a.py", "code", "python"),
-        ("a.ts", "code", "typescript"),
-        ("a.tsx", "code", "tsx"),
-        ("a.js", "code", "javascript"),
-        ("a.jsx", "code", "jsx"),
     ],
 )
-def test_reads_text_and_code_files(tmp_path, name, kind, language):
+def test_reads_text_files(tmp_path, name, kind, language):
     loaded = loaders.load(write(tmp_path, name, "olá, mundo\n"))
     assert isinstance(loaded, Loaded)
     assert (loaded.kind, loaded.language) == (kind, language)
@@ -585,68 +578,3 @@ def test_pdf_worker_failures_become_skips_with_the_reason(tmp_path, monkeypatch)
     result = loaders.load(path)
     assert isinstance(result, UnsupportedFormat)
     assert "PdfReadError" in result.reason
-
-
-# --- requires-python --------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _fresh_requires_cache():
-    loaders.find_requires_python.cache_clear()
-    yield
-    loaders.find_requires_python.cache_clear()
-
-
-@pytest.mark.parametrize(
-    ("spec", "expected"),
-    [
-        (">=3.14", (3, 14)),
-        (">=3.12,<4", (3, 12)),
-        ("~=3.13", (3, 13)),
-        (">= 3.10", (3, 10)),
-        ("<4", None),
-        ("nonsense", None),
-    ],
-)
-def test_find_requires_python_reads_the_lower_bound(tmp_path, spec, expected):
-    write(tmp_path, "pyproject.toml", f'[project]\nname = "x"\nrequires-python = "{spec}"\n')
-    (tmp_path / "pkg").mkdir()
-    assert loaders.find_requires_python(tmp_path / "pkg") == expected
-
-
-def test_find_requires_python_uses_the_nearest_pyproject_and_tolerates_bad_ones(tmp_path):
-    (tmp_path / "inner").mkdir()
-    write(tmp_path, "pyproject.toml", '[project]\nname = "outer"\nrequires-python = ">=3.14"\n')
-    assert loaders.find_requires_python(tmp_path / "inner") == (3, 14)  # inherited from the parent
-    loaders.find_requires_python.cache_clear()
-    write(tmp_path, "inner/pyproject.toml", '[dependency-groups]\nformats = ["x"]\n')
-    assert loaders.find_requires_python(tmp_path / "inner") is None  # the nearest one wins
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        b"this is [not toml",
-        b"a = " + b"[" * 100_000 + b"]" * 100_000,  # RecursionError inside tomllib
-        b'[project]\nrequires-python = ">=' + b"1" * 5000 + b'.1"\n',  # int() digit limit
-        b"\xff\xfe\x00 not utf-8",
-        b"[project]\nrequires-python = 3\n",
-        b'project = "not a table"\n',
-    ],
-    ids=["bad-toml", "recursion", "huge-int", "bad-utf8", "wrong-type", "project-not-a-table"],
-)
-def test_a_hostile_pyproject_yields_none_instead_of_raising(tmp_path, content):
-    write(tmp_path, "pyproject.toml", content)
-    assert loaders.find_requires_python(tmp_path) is None
-
-
-def test_an_oversized_pyproject_is_ignored(tmp_path, monkeypatch):
-    write(tmp_path, "pyproject.toml", '[project]\nrequires-python = ">=3.14"\n')
-    monkeypatch.setattr(loaders, "MAX_TOML_BYTES", 10)
-    assert loaders.find_requires_python(tmp_path) is None
-
-
-def test_find_requires_python_without_any_pyproject(tmp_path):
-    if any((p / "pyproject.toml").exists() for p in tmp_path.parents):
-        pytest.skip("an ancestor of the temp dir has a pyproject.toml")
-    assert loaders.find_requires_python(tmp_path / "nowhere") is None

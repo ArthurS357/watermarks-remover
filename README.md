@@ -797,31 +797,33 @@ on the host instead. Model downloads still hit the HF hub on first run.
 
 ## Detecção estilométrica
 
-Três scripts isolados em `tools/` (não tocam o serviço HTTP) cuidam de hábitos de estilo no texto
-e no código que **você** escreveu: travessões em excesso, títulos de modelo, comentários óbvios e
-assim por diante. Dois apontam e medem; o terceiro, `naturalize.py`, reescreve o texto para tirar
+Três scripts isolados em `tools/` (não tocam o serviço HTTP) cuidam de hábitos de estilo na prosa
+que **você** escreveu: travessões em excesso, títulos de modelo, negrito de abertura e assim por
+diante. **Só prosa:** código-fonte saiu do escopo na R15 (ver abaixo). Dois apontam e medem; o terceiro, `naturalize.py`, reescreve o texto para tirar
 os hábitos que são só estrutura. Nenhum diz quem escreveu nada. A saída traz `signals`, um `score`
-de 0.0 a 1.0, `confidence` (`low`, `medium`, `high`) e o `disclaimer`. É determinístico: regex,
-`ast` e contagens, sem modelo e sem rede.
+de 0.0 a 1.0, `confidence` (`low`, `medium`, `high`) e o `disclaimer`. É determinístico: regex
+e contagens, sem modelo e sem rede.
 
 Não substituem o `service/scripts/score_stylometry.py` (o `--stylometry` do serviço), e não
 compartilham código com ele. Aquele dá uma pontuação única só para texto, com exit 1 acima de um
-limiar e sem a posição de cada achado. Estes listam cada sinal com linha e trecho, cobrem código
-além de texto e comparam antes e depois de uma reescrita.
+limiar e sem a posição de cada achado. Estes listam cada sinal com linha e trecho e comparam
+antes e depois de uma reescrita.
 
-> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em
-> código com convenções fortes. Uso pessoal — não use para acusar terceiros.
+> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado. Uso
+> pessoal — não use para acusar terceiros.
 
 ```bash
-python tools/detect_ai_patterns.py CAMINHO [--format json|md] [--only text|code|all] \
-    [--min-severity low|medium|high] [--ignore GLOB] [--exclude-tests] [--output ARQUIVO]
+python tools/detect_ai_patterns.py CAMINHO [--format json|md] [--only text|all] \
+    [--min-severity low|medium|high] [--ignore GLOB] [--output ARQUIVO]
 python tools/measure_skill_effectiveness.py ANTES DEPOIS [--format json|md] \
     [--signals sinal1,sinal2] [--output ARQUIVO]
 ```
 
-- **Formatos.** Texto: `.md .txt .html .docx .pdf`. Código: `.py`. O detector também lê
-  `.ts .tsx .js .jsx`, mas **sem promessa de cobertura**: em 30 arquivos TS/TSX reais ele não
-  emitiu sinal nenhum, com tree-sitter ou sem. Tratar TS/JS fica para uma rodada dedicada.
+- **Formatos.** Prosa: `.md .txt .html .docx .pdf`. **Código está fora do escopo (R15).** Os sinais
+  de código foram medidos e abandonados: na biblioteca padrão do Python, escrita por humanos, 49%
+  dos arquivos dispararam algum sinal, e em código de modelo realista só um sinal disparou. Um
+  arquivo de código passado ao CLI é recusado ("não é prosa", exit 2); numa pasta é ignorado.
+  `--only` fica por compatibilidade (`text` e `all` fazem o mesmo; `code` não existe mais).
 - **Quanto cada sinal pesa (medido em 2026-10-21).** São 21 sinais de texto, mas no corpus
   pessoal (51 arquivos em português) só 13 dispararam e 8 nunca (`delve_family`,
   `fast_paced_world`, `hedge_double`, `meta_commentary`, `here_is_why`,
@@ -831,9 +833,8 @@ python tools/measure_skill_effectiveness.py ANTES DEPOIS [--format json|md] \
   (o loader de `.docx` descarta o negrito). Com os `**` retirados do lado IA o AUC do corpus vai de
   0,63 para 0,49: o score aponta hábito de estilo, **não separa** texto humano de texto de IA.
   Detalhe e ressalvas (n = 20 e 31, medição única) em `docs/DONE.md`.
-- **Grupo opcional `formats`.** `.docx`, `.pdf` e o tree-sitter (TS/JS) precisam dele. Sem o
-  grupo, `.docx`/`.pdf` são pulados com um aviso e TS/JS são analisados por regex, com
-  `confidence` no máximo `low`. Instale sem mexer no resto do ambiente:
+- **Grupo opcional `formats`.** `.docx` e `.pdf` precisam dele. Sem o grupo, são pulados com um
+  aviso. Instale sem mexer no resto do ambiente:
 
   ```bash
   uv pip install --group formats      # ou: pip install --group formats
@@ -846,12 +847,11 @@ python tools/measure_skill_effectiveness.py ANTES DEPOIS [--format json|md] \
 - **Score.** Soma ponderada dos sinais que dispararam (estrutural 2, lexical 1, métrica 0,5;
   severidade `low`/`medium`/`high` vale 0,33/0,66/1), saturada por `1 − e^(−soma/8)`. Não é
   probabilidade. `--min-severity` esconde sinais do relatório, mas o score usa todos.
-- **Confidence.** Vem do tamanho da amostra (texto: menos de 150 palavras `low`, menos de 600
-  `medium`; código: menos de 40 linhas `low`, menos de 200 `medium`). Regex no lugar do
-  tree-sitter limita a `low`, e PDF a `medium`.
+- **Confidence.** Vem do tamanho da amostra (menos de 150 palavras `low`, menos de 600
+  `medium`). PDF limita a `medium`.
 - **O que é varrido.** Ficam de fora `.git`, `.venv`, `node_modules`, `__pycache__` e caches. Links
   simbólicos e junctions do Windows nunca são seguidos. Texto acima de 1 MB e binário acima de
-  25 MB são pulados com o motivo. `.docx`, `.pdf` e o tree-sitter rodam em um processo filho com
+  25 MB são pulados com o motivo. `.docx` e `.pdf` rodam em um processo filho com
   timeout, e entrada corrompida vira "pulado", não erro.
 - **Saída.** Exit 0 rodou; 1 caminho inexistente ou `--output` inválido; 2 nada foi analisado.
   Com diretórios, o `measure_skill_effectiveness.py` pareia os arquivos pelo caminho relativo.
@@ -865,7 +865,7 @@ Exemplo real, `python tools/detect_ai_patterns.py tests/fixtures/stylometry/text
 ```text
 # Relatório estilométrico
 
-> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em código com convenções fortes. Uso pessoal — não use para acusar terceiros.
+> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado. Uso pessoal — não use para acusar terceiros.
 
 - Arquivos analisados: 1 (markdown 1)
 - Só sinais de severidade high ou mais; o score usa todos
@@ -896,7 +896,7 @@ tests/fixtures/stylometry/text_ai_like.md tests/fixtures/stylometry/text_human_l
 ```text
 # Medição de efetividade
 
-> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em código com convenções fortes. Uso pessoal — não use para acusar terceiros.
+> Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado. Uso pessoal — não use para acusar terceiros.
 
 - Score: 0.43 → 0.00 (delta -0.43)
 - Efetividade: **high** · confiança medium

@@ -457,7 +457,7 @@ def test_score_is_bounded_and_uses_the_worst_severity_per_signal():
     many = [*one, Signal("bold_lead_in", 3, "low", 2, "y")]
     assert score_signals(one) == score_signals(many)
     everything = [Signal(n, 9, "high", None, "") for n in CATEGORY]
-    assert 0.99 < score_signals(everything) <= 1.0
+    assert 0.97 < score_signals(everything) <= 1.0  # 21 signals, all high: 0.9734
 
 
 def test_score_keeps_resolving_when_many_signals_fire():

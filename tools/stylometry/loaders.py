@@ -1,6 +1,6 @@
-"""Format loaders: turn a file into prose or source for the detectors.
+"""Format loaders: turn a file into prose for the detectors.
 
-Plain text, markdown, HTML and code need only the standard library. ``.docx`` and ``.pdf`` need
+Plain text, markdown and HTML need only the standard library. ``.docx`` and ``.pdf`` need
 the optional ``formats`` dependency group; without it ``load`` returns an ``UnsupportedFormat``
 (a value, not an exception) so a directory scan can warn and move on.
 
@@ -12,11 +12,9 @@ is extracted in the killable worker process of ``isolate`` with a timeout.
 from __future__ import annotations
 
 import codecs
-import functools
 import importlib
 import lzma
 import re
-import tomllib
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -26,18 +24,13 @@ from typing import Any
 
 from . import isolate
 
-# extension -> (kind, language). ``language`` is what ``code.analyze`` expects for code.
+# extension -> (kind, language). Prose only: source code is out of scope (R15).
 FORMATS: dict[str, tuple[str, str]] = {
     ".md": ("text", "markdown"),
     ".txt": ("text", "text"),
     ".html": ("text", "html"),
     ".docx": ("text", "docx"),
     ".pdf": ("text", "pdf"),
-    ".py": ("code", "python"),
-    ".ts": ("code", "typescript"),
-    ".tsx": ("code", "tsx"),
-    ".js": ("code", "javascript"),
-    ".jsx": ("code", "jsx"),
 }
 
 MAX_TEXT_BYTES = 1_000_000
@@ -46,7 +39,6 @@ MAX_UNCOMPRESSED = 20_000_000  # what a DOCX may really decompress to
 MAX_TEXT_CHARS = 1_000_000  # cap on text extracted from DOCX/PDF
 MAX_PDF_PAGES = 200
 MAX_PDF_STREAM = 5_000_000  # pypdf's own ceiling per decompressed stream is 75 MB
-MAX_TOML_BYTES = 1_000_000
 DOCX_TIMEOUT = 30.0
 PDF_TIMEOUT = 30.0
 
@@ -59,7 +51,7 @@ PDF_NOTE = (
 @dataclass(frozen=True)
 class Loaded:
     path: Path
-    kind: str  # "text" | "code"
+    kind: str  # always "text"; kept in the JSON report
     language: str
     text: str
     confidence_cap: str = "high"
@@ -335,32 +327,3 @@ def _load_pdf(path: Path) -> Loaded | UnsupportedFormat:
     if result[0] == "skip":
         return UnsupportedFormat(path, result[1])
     return Loaded(path, "text", "pdf", result[1], "medium", (PDF_NOTE, *result[2]))
-
-
-# --- project context ---------------------------------------------------------------------------
-
-_REQUIRES = re.compile(r"(?:>=|~=|==)\s*(\d+)\.(\d+)")
-
-
-@functools.cache
-def find_requires_python(start: Path) -> tuple[int, int] | None:
-    """Lower bound of ``requires-python`` in the nearest ``pyproject.toml`` at or above ``start``
-    (a directory). ``None`` when there is none, it has no bound, or it cannot be read: a
-    ``pyproject.toml`` in the scanned tree is input like any other file."""
-    for directory in (start, *start.parents):
-        candidate = directory / "pyproject.toml"
-        if not candidate.is_file():
-            continue
-        try:
-            with candidate.open("rb") as handle:
-                raw = handle.read(MAX_TOML_BYTES + 1)
-            if len(raw) > MAX_TOML_BYTES:
-                return None
-            data = tomllib.loads(raw.decode("utf-8"))
-            project = data.get("project")
-            spec = project.get("requires-python") if isinstance(project, dict) else None
-            found = _REQUIRES.search(spec) if isinstance(spec, str) else None
-            return (int(found[1]), int(found[2])) if found else None
-        except (OSError, ValueError, RecursionError):  # ValueError: bad UTF-8, TOML, huge int
-            return None
-    return None

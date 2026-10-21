@@ -1,7 +1,6 @@
-"""Deterministic stylometric signals for prose and source code.
+"""Deterministic stylometric signals for prose.
 
-No model and no network: every signal is a regex, an ``ast`` walk or a count over the
-document structure. The catalogue, weights and thresholds are documented in ``docs/TODO.md``
+No model and no network: every signal is a regex or a count over the document structure. The catalogue, weights and thresholds are documented in ``docs/TODO.md``
 (round R10) and are deliberately uncalibrated against a corpus. This is a personal-use review
 aid: a score is a prompt to reread your own text, not a verdict about anyone.
 """
@@ -15,8 +14,7 @@ from typing import NamedTuple
 
 DISCLAIMER = (
     "Score é indicativo, não veredito. Falsos positivos esperados em texto técnico "
-    "disciplinado e em código com convenções fortes. Uso pessoal — não use para acusar "
-    "terceiros."
+    "disciplinado. Uso pessoal — não use para acusar terceiros."
 )
 # Said at the top of every report: measured on the personal corpus (docs/DONE.md, 2026-10-21).
 EXPERIMENTAL_NOTICE = (
@@ -51,9 +49,6 @@ CATEGORY: dict[str, str] = {
             "fast_paced_world",
             "on_the_other_hand_cascade",
             "hedge_double",
-            "obvious_comment",
-            "warning_comment",
-            "todo_comment_style",
         ),
         "lexical",
     ),
@@ -69,18 +64,6 @@ CATEGORY: dict[str, str] = {
             "declarative_close",
             "here_is_why",
             "comparison_table_symmetry",
-            "docstring_echoes_name",
-            "type_hint_on_trivial_local",
-            "generic_try_except",
-            "excessive_params",
-            "over_descriptive_name",
-            "complete_main_boilerplate",
-            "future_annotations_on_314",
-            "match_where_if_fits",
-            "as_const_everywhere",
-            "optional_chaining_overuse",
-            "jsdoc_on_trivial_type",
-            "explicit_return_types_on_arrow",
         ),
         "structural",
     ),
@@ -90,7 +73,6 @@ CATEGORY: dict[str, str] = {
             "sentence_length_stddev",
             "paragraph_length_stddev",
             "em_dash_to_comma_ratio",
-            "comment_density",
         ),
         "metric",
     ),

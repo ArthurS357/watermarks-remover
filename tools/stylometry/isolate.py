@@ -1,9 +1,8 @@
 """Run a function of this package in a child process that can be killed.
 
-Why a process: tree-sitter's TSX scanner can spin forever on some malformed input while holding the
-GIL, and pypdf / python-docx can allocate gigabytes on a crafted file. A thread can stop neither; a
-process can. One long-lived worker serves many calls (spawning per file would cost ~0.3 s on
-Windows); it is killed on a timeout or when it dies and is respawned by the next call.
+Why a process: pypdf / python-docx can allocate gigabytes or spin on a crafted file, and a thread
+can stop neither; a process can. One long-lived worker serves many calls (spawning per file would
+cost ~0.3 s on Windows); it is killed on a timeout or when it dies and is respawned by the next call.
 
 Arguments and results travel as JSON over a pipe, never as pickle: the child has just parsed
 hostile data, so the parent must not unpickle whatever it sends back. ``target`` is a

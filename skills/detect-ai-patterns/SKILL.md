@@ -1,11 +1,11 @@
 ---
 name: detect-ai-patterns
-description: Analisa texto e código em busca de padrões estilométricos de IA (em-dash denso, bold lead-in, template headings, hedges, docstrings que ecoam o nome da função, comentário óbvio, type hint em local trivial). Determinístico, sem ML. Cobre .md, .txt, .html, .docx, .pdf e .py; .ts, .tsx, .js e .jsx são lidos, mas sem validação (nenhum sinal disparou em 30 arquivos TS/TSX reais). Use quando o usuário pedir "esse texto parece IA?", "detecta IA nisso", "analisa esse arquivo", "quais hábitos de IA tem aqui", ou invoca /detect-ai-patterns. O resultado é indicativo, não veredito, e nunca diz quem escreveu.
+description: Analisa prosa em busca de padrões estilométricos de IA (em-dash denso, bold lead-in, template headings, hedges, aberturas de "mundo acelerado"). Determinístico, sem ML. Cobre .md, .txt, .html, .docx e .pdf. Código-fonte está fora do escopo. Use quando o usuário pedir "esse texto parece IA?", "detecta IA nisso", "analisa esse texto", "quais hábitos de IA tem aqui", ou invoca /detect-ai-patterns. O resultado é indicativo, não veredito, e nunca diz quem escreveu.
 ---
 
 # Detect AI patterns: onde o estilo denuncia hábito
 
-Ferramenta do repositório `watermarks-remover`. Varre um arquivo ou uma pasta e lista, por linha, os hábitos de estilo que costumam aparecer em texto e código gerados por modelo: travessões em excesso, títulos de modelo, comentários que repetem a linha seguinte, e assim por diante. Sem modelo e sem rede: regex, `ast` e contagens.
+Ferramenta do repositório `watermarks-remover`. Varre um arquivo ou uma pasta e lista, por linha, os hábitos de estilo que costumam aparecer em texto gerado por modelo: travessões em excesso, títulos de modelo, negrito de abertura, e assim por diante. Sem modelo e sem rede: regex e contagens. **Só prosa.** Código-fonte (`.py`, `.ts`, `.js`...) saiu do escopo na R15: os sinais de código marcaram 49% dos arquivos humanos da biblioteca padrão do Python e não pegaram código de modelo realista. Um arquivo de código passado ao CLI é recusado com uma mensagem, e numa pasta é ignorado.
 
 Este arquivo também é a documentação. Se o usuário perguntar "como isso funciona?", responda a partir das seções abaixo, sem abrir o código.
 
@@ -13,7 +13,7 @@ Este arquivo também é a documentação. Se o usuário perguntar "como isso fun
 
 - **É** uma ajuda de revisão de uso pessoal: aponta hábitos no que **o próprio usuário** escreveu, para ele reescrever.
 - **Não é** um detector de autoria. A saída nunca traz `is_ai`. Traz `signals`, `score` (0,0 a 1,0), `confidence` (`low`, `medium`, `high`) e `disclaimer`. Nunca diga "isso foi escrito por IA", e não use o resultado para acusar terceiros.
-- **Não é** o `service/scripts/score_stylometry.py` (o `--stylometry` do serviço): aquele dá uma nota única só para texto, sem a posição de cada achado. Este lista cada sinal com linha e trecho, cobre código e compara antes e depois.
+- **Não é** o `service/scripts/score_stylometry.py` (o `--stylometry` do serviço): aquele dá uma nota única só para texto, sem a posição de cada achado. Este lista cada sinal com linha e trecho e compara antes e depois.
 
 ## Onde está o CLI
 
@@ -39,34 +39,34 @@ PY="$REPO/.venv/Scripts/python.exe"; [ -x "$PY" ] || PY="$REPO/.venv/bin/python"
 
 Prefira o Python da `.venv` do repositório. Nesta máquina o `python` do PATH é o stub da Microsoft Store ("Python was not found"): se o fallback falhar assim, use o interpretador real (3.12 ou mais novo) e diga isso ao usuário.
 
-`.docx`, `.pdf` e a análise de TS/JS com tree-sitter precisam do grupo opcional `formats` (`uv pip install --group formats`). Sem ele, `.docx` e `.pdf` são pulados com um aviso e TS/JS são analisados por regex, com `confidence` no máximo `low`.
+`.docx` e `.pdf` precisam do grupo opcional `formats` (`uv pip install --group formats`). Sem ele, são pulados com um aviso.
 
 ## Comandos típicos
 
 ```
-detect_ai_patterns.py CAMINHO [--format json|md] [--only text|code|all]
+detect_ai_patterns.py CAMINHO [--format json|md] [--only text|all]
                       [--min-severity low|medium|high] [--ignore GLOB]
-                      [--exclude-tests] [--output ARQUIVO]
+                      [--output ARQUIVO]
 ```
+
+`--only` existe só por compatibilidade: `text` e `all` fazem a mesma coisa, e `--only code` não existe mais.
 
 | Quero | Comando |
 |---|---|
 | Um arquivo, em markdown | `CAMINHO --format md` |
-| Só o texto de um repositório | `. --only text --format md` |
-| Só o código | `. --only code --format md` |
+| A documentação de um repositório | `. --format md` |
 | Ver só o que pesa | `CAMINHO --format md --min-severity high` |
-| Repositório de terceiros | `. --exclude-tests --format md` |
 | Guardar o relatório | `CAMINHO --format md --output relatorio.md` |
 | Consumir por script | `CAMINHO --format json` |
 
 Pastas como `.git`, `.venv`, `node_modules` e caches nunca são varridas, e links simbólicos não são seguidos. Texto acima de 1 MB e binário acima de 25 MB são pulados com o motivo.
 
-Exit: **0** rodou; **1** caminho inexistente ou `--output` inválido; **2** nada foi analisado.
+Exit: **0** rodou; **1** caminho inexistente ou `--output` inválido; **2** nada foi analisado (inclui um único arquivo de código, recusado com a mensagem "não é prosa").
 
-**Saída de build entra na varredura e domina o ranking.** Só `.git`, `.venv`, `node_modules` e caches ficam de fora; `.next/`, `coverage/`, `dist/`, `build/` e afins não. Num projeto Next.js real (CodeQuest), 850 arquivos foram analisados e os 3 primeiros do ranking eram HTML gerado em `frontend/.next/`; com as pastas ignoradas caiu para 306 arquivos, só fonte. Em repositório com frontend, passe sempre o `--ignore`:
+**Saída de build entra na varredura e domina o ranking.** Só `.git`, `.venv`, `node_modules` e caches ficam de fora; `.next/`, `coverage/`, `dist/`, `build/` e afins não. Num projeto Next.js real (CodeQuest), 850 arquivos foram analisados e os 3 primeiros do ranking eram HTML gerado em `frontend/.next/`. Em repositório com frontend, passe sempre o `--ignore`:
 
 ```bash
-detect_ai_patterns.py . --exclude-tests --format md \
+detect_ai_patterns.py . --format md \
   --ignore 'frontend/.next/*' --ignore 'frontend/coverage/*' --ignore 'frontend/node_modules/*'
 ```
 
@@ -76,28 +76,12 @@ Para só a documentação, aponte direto a pasta (`Docs`) em vez de varrer a rai
 
 - **Cada sinal** traz nome, severidade (`low`, `medium`, `high`), valor (quantas vezes aparece, ou a métrica), a linha e um trecho. Sinais de documento (métricas) não têm linha.
 - **Score.** Soma ponderada dos sinais que dispararam (estrutural 2, lexical 1, métrica 0,5; `low`/`medium`/`high` valem 0,33/0,66/1), saturada por `1 − e^(−soma/8)`. Não é probabilidade. Limiares e pesos são escolha da ferramenta, sem calibração contra corpus. `--min-severity` só esconde sinais do relatório: o score usa todos.
-- **Confidence** vem do tamanho da amostra: texto com menos de 150 palavras é `low`, menos de 600 é `medium`; código com menos de 40 linhas é `low`, menos de 200 é `medium`. Regex no lugar do tree-sitter limita a `low`, e PDF a `medium`. **Se a confiança é `low`, diga isso junto do score.**
+- **Confidence** vem do tamanho da amostra: texto com menos de 150 palavras é `low`, menos de 600 é `medium`. PDF limita a `medium`. **Se a confiança é `low`, diga isso junto do score.**
 - **Forma do `--format json`.** Chaves de topo: `files_scanned`, `by_format`, `by_signal`, `scores`, `skipped`, `disclaimer`. `scores` é um **dicionário** indexado pelo nome do arquivo, não uma lista; cada entrada traz `format`, `kind`, `score`, `confidence`, `signals[]` (`name`, `value`, `severity`, `line`, `snippet`) e `notes`. Para ranquear: `sorted(d["scores"].items(), key=lambda kv: -kv[1]["score"])`. Procurar `files` ou `results` devolve vazio. Em dúvida, use `--format md`, que já vem ordenado.
-- **TS/JS: silêncio não é limpeza.** O próprio texto de ajuda do CLI avisa que os sinais de `.ts`/`.tsx` não emitiram nada em 30 arquivos reais. Um frontend sem achados não prova ausência de hábito, só que o detector não enxerga ali.
 - **No relatório `md`:** a tabela "Sinais mais frequentes" (quantos arquivos, severidade máxima) e o "Top 10 arquivos por score", com os sinais de cada um.
 - **`.docx`, `.pdf` e `.html`:** as linhas se referem ao texto extraído, não ao arquivo original. O relatório avisa.
 
-Trecho real, `detect_ai_patterns.py code_ai_like.py --format md --min-severity medium`:
-
-```text
-### 1. `code_ai_like.py`
-
-Score 0.69 · confiança medium · python
-
-- `obvious_comment` (high, valor 7): linha 6: `# Import the required modules`; linha 21: `# Initialize the content variable` (+5)
-- `comment_density` (high, valor 0.28): documento: `14 comentários / 50 linhas de código`
-- `docstring_echoes_name` (medium, valor 3): linha 19: `get_file_content: Gets the file content.`
-- `excessive_params` (medium, valor 10): linha 41: `write_output(10 parâmetros)`
-```
-
-## Catálogo de sinais
-
-**Texto (21)**
+## Catálogo de sinais (21)
 
 | Sinal | O que conta |
 |---|---|
@@ -120,38 +104,20 @@ Score 0.69 · confiança medium · python
 | `sentence_length_stddev`, `paragraph_length_stddev` | as mesmas métricas, em faixa mais branda |
 | `type_token_ratio` | vocabulário repetido nas primeiras 300 palavras |
 
-**Código (16).** `.py` usa `ast`; TS/JS usa tree-sitter, ou regex se o grupo `formats` não está instalado.
-
-| Sinal | O que conta |
-|---|---|
-| `docstring_echoes_name` | docstring de uma linha que só repete o nome da função |
-| `obvious_comment` | `# Initialize/Set/Import/Return...` antes de uma linha que já diz isso |
-| `comment_density` | proporção de comentários por linha de código |
-| `type_hint_on_trivial_local` | anotação que só repete o tipo de um literal escalar (`x: int = 0`) |
-| `generic_try_except` | `except Exception:` ou `except:` só com `pass` |
-| `excessive_params` | função com 10 ou mais parâmetros |
-| `over_descriptive_name` | nome com 4 palavras ou mais e 30+ caracteres (só em projeto com até 50 arquivos de código) |
-| `complete_main_boilerplate` | `__main__` com argparse, logging e try/except juntos |
-| `future_annotations_on_314` | `from __future__ import annotations` com `requires-python >= 3.14` |
-| `match_where_if_fits` | `match` de dois casos simples |
-| `warning_comment`, `todo_comment_style` | `# Note:`/`# Important:` sem risco real; `TODO(autor):` repetido |
-| `as_const_everywhere`, `optional_chaining_overuse`, `jsdoc_on_trivial_type`, `explicit_return_types_on_arrow` | só TS/JS |
-
 ## Regras ao reportar
 
-1. **Sempre repita o disclaimer**, junto do score: *"Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado e em código com convenções fortes."*
-2. **`--exclude-tests` em repositório de terceiros.** Fixtures e testes carregam de propósito comentários óbvios e travessões, e distorcem o ranking.
-3. **Dê o número e a confiança**, nunca só um adjetivo. Score com `confidence: low` é amostra pequena.
-4. **Leia o contexto antes de recomendar.** Um documento técnico pode pontuar alto só por usar negrito de abertura e tabelas, que é o formato dele; código do serviço pode ter função com muitos parâmetros por bons motivos. Isso é falso positivo esperado, não defeito.
-5. **Não acuse.** O resultado nunca é prova sobre quem escreveu, e o uso é sobre o que o usuário produziu.
-6. **O catálogo é maior que o que pesa.** Há 21 sinais de texto, mas num corpus pessoal de 51 arquivos em português só 13 dispararam, e quatro (`bold_lead_in`, `emoji_heading`, `em_dash_density`, `em_dash_to_comma_ratio`) respondem por cerca de 70% do score do lado IA. Dois deles só existem em Markdown. Tirando os `**`, o AUC desse corpus cai de 0,63 para 0,49: **o score não separa humano de IA, só aponta hábito**. Não o apresente como detecção.
+1. **Sempre repita o disclaimer**, junto do score: *"Score é indicativo, não veredito. Falsos positivos esperados em texto técnico disciplinado."*
+2. **Dê o número e a confiança**, nunca só um adjetivo. Score com `confidence: low` é amostra pequena.
+3. **Leia o contexto antes de recomendar.** Um documento técnico pode pontuar alto só por usar negrito de abertura e tabelas, que é o formato dele. Isso é falso positivo esperado, não defeito.
+4. **Não acuse.** O resultado nunca é prova sobre quem escreveu, e o uso é sobre o que o usuário produziu.
+5. **O catálogo é maior que o que pesa.** Há 21 sinais, mas num corpus pessoal de 51 arquivos em português só 13 dispararam, e quatro (`bold_lead_in`, `emoji_heading`, `em_dash_density`, `em_dash_to_comma_ratio`) respondem por cerca de 70% do score do lado IA. Dois deles só existem em Markdown. Tirando os `**`, o AUC desse corpus cai de 0,63 para 0,49: **o score não separa humano de IA, só aponta hábito**. Não o apresente como detecção.
 
 ## Precisa agir? Regra de decisão
 
 Antes de recomendar qualquer reescrita, olhe **quais** sinais puxam o score:
 
 - **Sinais ditados pelo formato** (`bold_lead_in` em requisitos com `**Campo:**`, `comparison_table_symmetry`, `paragraph_uniformity` em lista de requisitos, `template_heading` em doc de "Por que existe"): são o gênero do documento. Score até ~0,4 com esses sinais é **falso positivo esperado**. Diga isso e não proponha mexer.
-- **Sinais de hábito** (`em_dash_density`, `worth_noting`, `delve_family`, `fast_paced_world`, `hedge_double`, comentário óbvio em código): valem uma passada, são baratos de corrigir à mão e melhoram o texto de verdade.
+- **Sinais de hábito** (`em_dash_density`, `worth_noting`, `delve_family`, `fast_paced_world`, `hedge_double`): valem uma passada, são baratos de corrigir à mão e melhoram o texto de verdade.
 - Nunca persiga o número como meta. Um score baixo não prova autoria humana, e um alto não prova o contrário. Se o motivo do pedido for esconder o uso de IA de quem exige divulgação (disciplina, edital, plataforma), esse é um problema de política, não de estilo: diga isso em vez de otimizar o score.
 
 Caso medido (CodeQuest, `Docs/`): 8 arquivos com algum sinal, máximo 0,41, os três primeiros todos por formato. Conclusão correta: nada a reduzir.
@@ -160,5 +126,5 @@ Caso medido (CodeQuest, `Docs/`): 8 arquivos com algum sinal, máximo 0,41, os t
 
 - Para **texto** com problema estrutural (negrito de abertura, travessão, título de modelo, "vale notar que"): skill `naturalize`, que aplica transformações determinísticas e mede o efeito.
 - Para **prosa** que precisa de reescrita (ritmo, vocabulário): `/clean-user-facing-text`. Atenção: a medição da R10 mostrou que ela **não reduz** o score deste detector.
-- Para **código**: não há humanizador. Os sinais apontam onde revisar à mão.
+- **Código** não é analisado nem humanizado: está fora do escopo desta ferramenta.
 - Para medir antes e depois: `tools\measure_skill_effectiveness.py ANTES DEPOIS`.

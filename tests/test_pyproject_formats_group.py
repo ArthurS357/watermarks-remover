@@ -24,24 +24,19 @@ def pyproject() -> dict:
 def test_the_formats_group_lists_what_the_loaders_import():
     requirements = pyproject()["dependency-groups"]["formats"]
     names = {re.split(r"[<>=~!\[; ]", r, maxsplit=1)[0] for r in requirements}
-    assert names == {"python-docx", "pypdf", "tree-sitter", "tree-sitter-typescript"}
+    assert names == {"python-docx", "pypdf"}
     assert all(re.search(r">=\d", r) for r in requirements), "every entry carries a floor"
 
 
 def test_pyproject_declares_nothing_but_dependency_groups():
     # ruff.toml, pytest.ini and .coveragerc keep configuring their tools; a [tool.*] table here
-    # could change them. A [project] table would give find_requires_python a requires-python to
-    # act on and turn on future_annotations_on_314 for this repository.
+    # could change them.
     assert set(pyproject()) == {"dependency-groups"}
     assert set(pyproject()["dependency-groups"]) == {"formats"}
 
 
 def test_the_install_hint_names_the_group():
     assert "--group formats" in loaders.INSTALL_HINT
-
-
-def test_this_repository_has_no_requires_python_for_the_detector_to_read():
-    assert loaders.find_requires_python(ROOT) is None
 
 
 def test_files_the_round_adds_are_not_swallowed_by_the_deny_by_default_gitignore():

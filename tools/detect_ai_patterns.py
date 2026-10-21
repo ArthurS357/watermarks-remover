@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Detect stylometric "AI style" signals in prose and source code.
+"""Detect stylometric "AI style" signals in prose.
 
 A personal-use review aid: it points at habits in what *you* wrote (em-dash tics, template
-headings, obvious comments, ...) so you can rewrite them. It never says whether a text was
-written by an AI: the output is ``signals``, a ``score`` from 0.0 to 1.0, a ``confidence`` and a
-``disclaimer``. Deterministic: regexes, ``ast`` and counts, no model, no network.
+headings, bold lead-ins, ...) so you can rewrite them. It never says whether a text was written
+by an AI: the output is ``signals``, a ``score`` from 0.0 to 1.0, a ``confidence`` and a
+``disclaimer``. Deterministic: regexes and counts, no model, no network.
 
-Text: .md .txt .html .docx .pdf     Code: .py (also read: .ts .tsx .js .jsx, not validated)
-.docx/.pdf and tree-sitter (.ts/.tsx/.js/.jsx) need the optional ``formats`` dependency group;
-without it those files are skipped with a warning (or, for TS/JS, analysed by regex). The TS/JS
-signals emitted nothing on 30 real files (R13): do not read their silence as "no AI style".
+Prose only: .md .txt .html .docx .pdf. Source code is out of scope (R15): the code signals flagged
+49% of the human files in the Python standard library and stayed silent on realistic model output.
+.docx/.pdf need the optional ``formats`` dependency group; without it those files are skipped
+with a warning.
 
 Exit codes: 0 ran; 1 the path does not exist (or --output cannot be used); 2 nothing was analysed
 (also argparse's usage error).
@@ -35,13 +35,11 @@ from stylometry import (
     DISCLAIMER,
     EXPERIMENTAL_NOTICE,
     SEVERITIES,
-    Analysis,
     Signal,
     cap_confidence,
     loaders,
     printable,
 )
-from stylometry import code as code_signals
 from stylometry import text as text_signals
 
 # Never descended into: dependency trees, caches and VCS metadata (scanning ``.venv`` from the
@@ -61,21 +59,6 @@ DEFAULT_IGNORED_DIRS = frozenset(
         "build",
     }
 )
-TEST_DIRS = frozenset({"tests", "test", "__tests__"})
-TEST_FILE_PATTERNS = (
-    "test_*.py",
-    "*_test.py",
-    "conftest.py",
-    "*.test.ts",
-    "*.test.tsx",
-    "*.test.js",
-    "*.test.jsx",
-    "*.spec.ts",
-    "*.spec.tsx",
-    "*.spec.js",
-    "*.spec.jsx",
-)
-SMALL_PROJECT_FILES = 50  # over_descriptive_name only applies up to this many code files
 EXTRACTED = ("html", "docx", "pdf")  # formats whose line numbers refer to the extracted text
 TOP_FILES = 10
 LINES_PER_SIGNAL = 5
@@ -83,9 +66,7 @@ LINES_PER_SIGNAL = 5
 
 @dataclass(frozen=True)
 class Options:
-    only: str = "all"  # text | code | all
     ignore: tuple[str, ...] = ()
-    exclude_tests: bool = False
     skip: Path | None = None  # resolved path that is never scanned (the report being written)
     warn: bool = True  # print a line on stderr for every file that could not be read
 
@@ -128,39 +109,24 @@ def iter_files(root: Path, options: Options) -> Iterator[Path]:
             if d not in DEFAULT_IGNORED_DIRS
             and not os.path.isjunction(here / d)  # walk() follows junctions; islink() is False
             and not _ignored((rel_dir / d).as_posix(), d, options.ignore)
-            and not (options.exclude_tests and d in TEST_DIRS)
         )
         for name in sorted(filenames):
             path = here / name
             if path.is_symlink() or _ignored((rel_dir / name).as_posix(), name, options.ignore):
-                continue
-            if options.exclude_tests and any(fnmatch.fnmatch(name, p) for p in TEST_FILE_PATTERNS):
                 continue
             if options.skip is not None and path.resolve() == options.skip:
                 continue
             yield path
 
 
-def _analyze(loaded: loaders.Loaded, ctx: code_signals.Context) -> Analysis:
-    if loaded.kind == "text":
-        return text_signals.analyze(loaded.text)
-    return code_signals.analyze(loaded.text, loaded.language, ctx)
-
-
 def scan(root: Path, options: Options) -> Scan:
     """Analyse every supported file under ``root`` (a file or a directory)."""
     root = root.resolve()
     base = root if root.is_dir() else root.parent
-    candidates: list[tuple[Path, str]] = []
-    for path in iter_files(root, options):
-        fmt = loaders.format_of(path)
-        if fmt is None or (options.only != "all" and fmt[0] != options.only):
-            continue
-        candidates.append((path, fmt[0]))
-    candidates.sort(key=lambda c: c[0].relative_to(base).as_posix())  # one global, stable order
-    small = sum(1 for _, kind in candidates if kind == "code") <= SMALL_PROJECT_FILES
+    candidates = [p for p in iter_files(root, options) if loaders.format_of(p) is not None]
+    candidates.sort(key=lambda p: p.relative_to(base).as_posix())  # one global, stable order
     result = Scan()
-    for path, _ in candidates:
+    for path in candidates:
         rel = path.relative_to(base).as_posix()
         loaded = loaders.load(path)
         if isinstance(loaded, loaders.UnsupportedFormat):
@@ -170,13 +136,7 @@ def scan(root: Path, options: Options) -> Scan:
                     f"aviso: {printable(rel)} pulado: {printable(loaded.reason)}", file=sys.stderr
                 )
             continue
-        ctx = code_signals.Context(
-            small_project=small,
-            requires_python=loaders.find_requires_python(path.parent)
-            if loaded.language == "python"
-            else None,
-        )
-        analysis = _analyze(loaded, ctx)
+        analysis = text_signals.analyze(loaded.text)
         notes = [*loaded.notes, *analysis.notes]
         if loaded.language in EXTRACTED:
             notes.append("linhas se referem ao texto extraído, não ao arquivo original")
@@ -306,7 +266,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("path", help="file or directory (recursive)")
     p.add_argument("--format", choices=("json", "md"), default="json")
-    p.add_argument("--only", choices=("text", "code", "all"), default="all")
+    p.add_argument(
+        "--only",
+        choices=("text", "all"),
+        default="all",
+        help="kept for compatibility: prose is the only scope, so both values do the same",
+    )
     p.add_argument("--min-severity", choices=SEVERITIES, default="low")
     p.add_argument(
         "--ignore",
@@ -316,7 +281,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip paths matching GLOB (repeatable); matched on the relative path and the name",
     )
     p.add_argument("--output", metavar="FILE", help="write the report here instead of stdout")
-    p.add_argument("--exclude-tests", action="store_true", help="skip test files and folders")
     return p
 
 
@@ -327,11 +291,18 @@ def main(argv: list[str] | None = None) -> int:
     if not root.exists():
         print(f"erro: o caminho não existe: {root}", file=sys.stderr)
         return 1
+    if root.is_file() and loaders.format_of(root) is None:
+        print(
+            f"erro: {printable(root.name)} não é prosa ({root.suffix or 'sem extensão'}): "
+            f"o detector analisa só {', '.join(loaders.FORMATS)}. Código está fora do escopo.",
+            file=sys.stderr,
+        )
+        return 2
     output = Path(args.output).resolve() if args.output else None
     if output is not None and output == root.resolve():
         print("erro: --output aponta para o próprio arquivo analisado", file=sys.stderr)
         return 1
-    options = Options(args.only, tuple(args.ignore), args.exclude_tests, output)
+    options = Options(tuple(args.ignore), output)
     result = scan(root, options)
     render = render_md if args.format == "md" else render_json
     report = render(result, args.min_severity)

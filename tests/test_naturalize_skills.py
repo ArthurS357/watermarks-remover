@@ -92,7 +92,7 @@ def test_detect_lists_every_signal_the_detector_has():
     catalogue = text.split("## Catálogo de sinais")[1].split("## Regras ao reportar")[0]
     documented = set(re.findall(r"`(\w+)`", catalogue))
     assert set(CATEGORY) <= documented, sorted(set(CATEGORY) - documented)
-    assert len(CATEGORY) == 37
+    assert len(CATEGORY) == 21
 
 
 def test_the_documented_exit_codes_are_the_real_ones():

@@ -1,8 +1,12 @@
 # TODO — watermarks-remover
 
+## Rodada R15 — 2026-10-21 — Abandonar a detecção de código
+
+**Concluída em 2026-10-21 (sem commit).** O detector de código (`code.py`, 16 sinais) e o TS/JS com tree-sitter saíram do escopo; o sistema analisa só prosa. Evidência e lista do que mudou em [`docs/DONE.md`](DONE.md). **Encerra a R13:** R13-02, R13-03 e o "depois" do R13-07 não serão feitos.
+
 ## Rodada R13 — 2026-10-02 — Corrigir a detecção de código
 
-**Parcial, em 2026-10-02.** Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-10-02-r13). Feitos: R13-01, 04, 05, 06 e 08. **Pendentes: R13-02 (sinais), R13-03 (calibração) e o "depois" do R13-07**, bloqueados pelo corpus `human` de código (exercícios sem função); ver "Ajustes durante a execução", no fim da seção. O plano abaixo é o que foi escrito antes de qualquer edição (bc92fe1).
+**Encerrada pela R15 (código abandonado).** Era parcial em 2026-10-02. Ver [`docs/DONE.md`](DONE.md#estado-do-sistema--2026-10-02-r13). Feitos: R13-01, 04, 05, 06 e 08. **Pendentes: R13-02 (sinais), R13-03 (calibração) e o "depois" do R13-07**, bloqueados pelo corpus `human` de código (exercícios sem função); ver "Ajustes durante a execução", no fim da seção. O plano abaixo é o que foi escrito antes de qualquer edição (bc92fe1).
 
 O corpus de texto deu `d = 0,473`, `AUC = 0,63`
 (R12). O de código quase não emite sinal: 3 de 61 arquivos dispararam, e o único sinal que disparou

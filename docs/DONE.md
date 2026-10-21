@@ -2,6 +2,47 @@
 
 Histórico append-only. Mais recente no topo.
 
+## Rodada R15 — 2026-10-21 — Detecção de código abandonada (G-02, G-03)
+
+**Decisão de produto, baseada em evidência empírica: o escopo de código saiu do projeto.** O sistema analisa só prosa (`.md .txt .html .docx .pdf`). Não é adiamento: a R13 ("Para retomar" abaixo) fica encerrada por esta decisão.
+
+### Evidência (sonda de diagnóstico, nada versionado)
+
+- **Concentração (G-03).** Em 10 arquivos de IA sintéticos (5 caricatos feitos da lista de sinais, 5 em estilo de LLM moderno) contra 10 humanos: os caricatos dispararam 8 sinais, mas o código de IA realista (docstrings `Args:`, `-> None`, `except` específico) dispara **um só**, `complete_main_boilerplate`, que sozinho responde por 100% do score dele (27–29% do peso total da sonda). Sem ele a IA realista cai a 0 e o AUC vai de 1,00 para 0,75. A AUC 1,00 da sonda é circular (o código de IA foi escrito a partir dos sinais) e não vale como medida.
+- **Falso positivo em código humano real (G-02).** Na biblioteca padrão do Python 3.14, em grande parte escrita antes dos LLMs (568 arquivos): **49%** dispararam algum sinal e 8,8% passaram de 0,15. Os culpados são sinais de comentário: `comment_density` (196 arquivos), `warning_comment` (60), `obvious_comment` (58), mais `excessive_params` (27) e `generic_try_except` (22; o `ruff` do projeto já cobre este com `S110`/`E722`).
+- **Mecanismo.** Dos 12 sinais de Python, 8 são `ast` com casamento raso de tipo de nó e 4 são heurística de texto de comentário. Não há complexidade ciclomática, grafo de chamadas nem fluxo. Os 4 de TS/JS usam tree-sitter quando instalado e davam o mesmo resultado que o regex (0 em 30 arquivos reais).
+- **Custo de manter.** `code.py` tinha 646 linhas (teto de ~500), Maintainability Index B 10,91 (a ~2 pontos de C) e 4 funções em rank C; mais 764 linhas de teste.
+- Consequência: consertar (opção A) sem corpus válido de código seria chute, reduzir (B) deixaria 3 sinais que só pegam código grosseiro, e **a opção C foi escolhida**.
+
+### O que saiu
+
+| Item | Detalhe |
+|---|---|
+| Arquivos deletados (5) | `tools/stylometry/code.py` (646 linhas), `tests/test_stylometry_code.py` (764), `tests/fixtures/stylometry/code_ai_like.py`, `code_human_like.py`, `code_ai_like.tsx` (141) |
+| `pyproject.toml` | `tree-sitter` e `tree-sitter-typescript` saíram do grupo `formats` (ficam `python-docx` e `pypdf`). O `uv.lock` local foi regerado; ele é ignorado pelo git |
+| `tools/detect_ai_patterns.py` | Sem import de `code.py`, sem contexto de projeto pequeno e `requires-python`, sem `--exclude-tests` (só valia para código). `--only` virou `text` ou `all`, **ambos significam prosa** e ficou só por compatibilidade; `--only code` é erro de uso (exit 2). Um **único arquivo** de código dá exit 2 com "não é prosa"; numa pasta é ignorado |
+| `tools/stylometry/loaders.py` | `.py .ts .tsx .js .jsx` saíram de `FORMATS`; `find_requires_python` e o resto do contexto de projeto saíram. O campo `kind` do JSON ficou (sempre `text`) para não mudar o formato |
+| `tools/stylometry/__init__.py` | `CATEGORY` foi de 37 para 21 sinais; `DISCLAIMER` sem a menção a código |
+| `tools/measure_skill_effectiveness.py` | 16 linhas de `ADVICE` de sinais de código removidas |
+| `tools/build_corpus.py` | Sem `--mode code`; `--mode text` e `--mode all` fazem o mesmo (compatibilidade). `.py .ts .tsx .js .jsx` numa pasta do corpus são contados como ignorados e o `check` diz "N arquivo(s) de código recusado(s): o escopo é prosa" |
+| `tools/stylometry/isolate.py` | Docstring sem a razão do tree-sitter (o processo isolado continua servindo `.docx` e `.pdf`) |
+| Docs | `README.md`, `docs/CORPUS.md` (seção "Código fora do escopo"), `docs/ARSENAL_WATERMARK.md`, `skills/detect-ai-patterns/SKILL.md` (description e corpo), `.github/workflows/ci.yml` (comentário) |
+| Serviço HTTP | **Nada a mudar.** `server.py` e `score_stylometry.py` não tinham referência a código nem usam `tools/stylometry`; o contrato OpenAPI de `/detect` é só de texto |
+| `Makefile` | Sem referência a código ou tree-sitter; sem mudança |
+
+### Validação
+
+- Suíte: 1875 coletados antes, **1663 depois** (−212, mesmos 8 pulos). Por arquivo, só mudaram os de código: `test_stylometry_code.py` −186, `test_stylometry_loaders.py` −20, `test_build_corpus.py` −8, `test_pyproject_formats_group.py` −1, `test_detect_ai_patterns.py` +3. Os testes de prosa (`test_stylometry_text.py`, `naturalize*`, `measure*`) têm a mesma contagem. Resultado: **1655 passaram, 8 pulados, 0 falhas**.
+- Um teste de prosa teve o limiar corrigido, não o comportamento: com 21 sinais todos em `high` o score máximo é 0,9734, não mais de 0,99 (`test_stylometry_text.py`).
+- `ruff check` e `ruff format --check` em `service tests tools`: limpos. `pip-audit` em `requirements-dev.txt` e `requirements-synthid-scorer.txt`: nenhuma vulnerabilidade conhecida.
+- Prova de escopo: um `.md` produz o relatório; `detect_ai_patterns.py build_corpus.py` dá exit 2 com "não é prosa (.py)"; uma pasta com `mod.py` e `a.md` analisa 1 arquivo (`a.md`).
+- Linhas: 2156 removidas e 209 acrescentadas em 23 arquivos, antes deste registro.
+
+### Fica de fora
+
+- `backup/skills/detect-ai-patterns/SKILL.md` e `stylometry-report.md` na raiz são ignorados pelo git e ainda falam de código; não foram tocados. A skill instalada em `~/.claude/skills/` precisa de `install_skill.py` para pegar o `SKILL.md` novo.
+- Nenhum commit foi feito.
+
 ## Auditoria de medição — 2026-10-21 (sem número de rodada)
 
 Auditoria de leitura mais três experimentos locais, sem commit. Corpus pessoal de texto: 20 `human` (`.docx`) e 31 `ai` (27 `.md` e 4 `.docx`). Nada aqui sustenta decisão de ML: n = 20 e 31, medição única, e escolher o melhor de 13 sinais no mesmo corpus seria ajuste no conjunto de teste.
@@ -98,6 +139,8 @@ Opção B, **no alcance seguro**: a promessa de detecção de TS/TSX/JS/JSX saiu
 - Revisão `python-review` (agente `python-reviewer`) e `code-reviewer` sobre o diff: 0 crítico, 0 alto. Dos cinco achados baixos e médios, três foram aplicados (60a151b: teste do `max`, mensagem de degenerado, frase no doc); dois ficaram como estão (`--mode all` imprime `corpus:` duas vezes; um `.py` que some entre duas varreduras cairia em "ignorado").
 
 ### Para retomar (precisa de você)
+
+> **Encerrado pela R15 (2026-10-21):** o escopo de código foi abandonado. Os quatro itens abaixo não serão feitos.
 
 1. Trocar ou completar `human/` do corpus de código com **código seu de verdade**: ao menos 15, de preferência 30, módulos com funções, imports e 50+ linhas, do mesmo tipo de projeto que o `ai/`. Sem isso nenhum sinal novo é mensurável.
 2. Com o corpus, a rodada é: sinais distribucionais com TDD (candidatos já listados no plano: `type_hint_completeness`, `explicit_return_type_ratio`, `identifier_length_mean`, `blank_ratio`, `docstring_style_consistency`, `all_export_present`, `type_checking_present`, `dataclass_or_protocol_density`; `future_annotations_present` já existe), pesos por validação cruzada (leave-one-out, não só in-sample) e `compare --mode code` com número. Recomendação sobre ML: **em aberto**, não "justificado" nem "suficiente"; o 0,60 não sustenta nenhuma das duas.

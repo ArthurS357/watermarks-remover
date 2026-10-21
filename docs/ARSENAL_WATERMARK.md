@@ -32,8 +32,8 @@ Você é o executor. Siga a árvore de decisão (§4), use os comandos (§5), re
 **A realidade, sem enfeite (medida em 2026-10-21, corpus pessoal de 51 textos em português):**
 
 - **O detector do serviço é só inglês.** Usa 36 frases-clichê em inglês, burstiness e MATTR. Em 51 textos em português ele não achou nenhum marcador e teve AUC 0,43 (abaixo do acaso). O serviço agora devolve `language`, `confidence` e `notice`; para qualquer texto que não seja inglês, `confidence` é sempre `low` e `notice` diz que o detector é calibrado para inglês.
-- **`tools/stylometry` é experimental.** Tem 21 sinais de texto e 16 de código, mas no corpus só 13 sinais de texto dispararam, e quatro (`bold_lead_in`, `emoji_heading`, `em_dash_density`, `em_dash_to_comma_ratio`) respondem por cerca de 70% do score do lado IA. `bold_lead_in` é o de maior peso (cerca de 40%) e só existe em Markdown. Tirando os `**`, o AUC do corpus caiu de 0,63 para 0,49. **O score aponta hábito de estilo; não separa humano de IA.** O JSON do CLI traz `experimental: true` e o relatório em Markdown abre com um aviso.
-- **Código:** o detector de código quase não dispara (7 de 70 arquivos `.py`, 0 de 30 TS/TSX). Não existe humanizador de código.
+- **`tools/stylometry` é experimental.** Tem 21 sinais de prosa, mas no corpus só 13 dispararam, e quatro (`bold_lead_in`, `emoji_heading`, `em_dash_density`, `em_dash_to_comma_ratio`) respondem por cerca de 70% do score do lado IA. `bold_lead_in` é o de maior peso (cerca de 40%) e só existe em Markdown. Tirando os `**`, o AUC do corpus caiu de 0,63 para 0,49. **O score aponta hábito de estilo; não separa humano de IA.** O JSON do CLI traz `experimental: true` e o relatório em Markdown abre com um aviso.
+- **Só prosa. Código-fonte está fora do escopo (R15).** O detector de código foi medido e abandonado: na biblioteca padrão do Python (escrita por humanos) 49% dos arquivos dispararam algum sinal, e em código de modelo realista só um sinal disparou. Um arquivo de código passado ao CLI é recusado. Não existe humanizador de código.
 - **O `/naturalize` troca formato, não estilo.** O delta medido (−0,288, de 0,4401 para 0,1521) é **n = 1** e vem de negrito e dois títulos; o texto não ficou melhor.
 
 Nada aqui acusa autoria, e nenhum número prova que alguém usou ou não IA.
@@ -45,7 +45,7 @@ Nada aqui acusa autoria, e nenhum número prova que alguém usou ou não IA.
 | Python | 3.12 ou mais novo (testado em 3.12 e 3.14). O `python` do PATH pode ser o *stub* da Microsoft Store ("Python was not found"): use o da `.venv` do repositório |
 | Repositório | Variável de ambiente `WATERMARKS_REPO`. Sem ela, o caminho de instalação padrão do autor é `E:\Projetos\Scripts\watermarks-remover` (só um exemplo: defina a variável na sua máquina) |
 | Dependências | Os CLIs de `tools/` e os scripts de limpeza de texto usam só a biblioteca padrão |
-| Grupo `formats` (opcional) | `python-docx`, `pypdf`, `tree-sitter`, `tree-sitter-typescript`. Necessário para `.docx`, `.pdf` e TS/JS com tree-sitter |
+| Grupo `formats` (opcional) | `python-docx`, `pypdf`. Necessário para `.docx` e `.pdf` |
 
 Resolver o repositório e o Python:
 
@@ -70,7 +70,7 @@ uv sync --inexact --group formats     # alternativa com uv
 
 > ⚠️ **Nunca use `uv sync --group formats` sozinho.** É uma sincronização **exata**: remove da venv tudo o que não está no grupo, **pytest e ruff inclusos**. Se já fez, reinstale com `uv pip install -r requirements-dev.txt` dentro do repositório.
 
-Sem `formats`, as ferramentas ainda rodam: `.docx` e `.pdf` são pulados com aviso, e TS/JS caem num regex com `confidence` no máximo `low`.
+Sem `formats`, as ferramentas ainda rodam: `.docx` e `.pdf` são pulados com aviso.
 
 ## 3. Regras que valem em todo caso
 
@@ -90,7 +90,7 @@ Sem `formats`, as ferramentas ainda rodam: `.docx` e `.pdf` são pulados com avi
 | **Quero reduzir marca estatística em prosa** (Camada B) | Reescreva o texto à mão ou com o seu agente, depois limpe de novo a Camada A. Meça com `detect_ai_patterns` antes e depois. Sem garantia; em português, sem validação |
 | **Quero naturalizar um `.md` ou `.txt`** | `naturalize.py ARQ.md --diff-only --format md` → **ler o diff inteiro** → `--output COPIA.md` ou `--in-place` → `measure_skill_effectiveness.py ANTES DEPOIS` |
 | **É `.docx`, `.pdf` ou `.html`** | Confirme o `formats` (§2). Sem ele, declare a limitação e pare. `.docx` perde o negrito inline na leitura: `bold_lead_in` não dispara |
-| **É código-fonte** | `detect_ai_patterns.py CAMINHO --only code --exclude-tests` só para ver sinais. **Não** use `naturalize` e **não** reescreva código para baixar score |
+| **É código-fonte** | Fora do escopo: o detector recusa `.py`, `.ts`, `.js` e afins. **Não** use `naturalize` e **não** reescreva código para baixar score |
 | **Quero decidir se vale treinar um modelo (ML)** | `build_corpus.py init` → preencher `human\` e `ai\` com 10 ou mais arquivos cada, **no mesmo formato** → `check` → `compare` → ler d, intervalo e AUC. Com o corpus pessoal atual, nenhum número é válido |
 | **O serviço está offline** | Declare ao usuário (`curl http://127.0.0.1:8765/health` recusa). Peça autorização, suba com `start-watermarks-server.ps1`, ou entregue o comando e pare |
 
@@ -101,11 +101,11 @@ Execute a partir da raiz do repositório (`$py` e `$PY` são o Python da §2).
 ### Detectar: `tools/detect_ai_patterns.py`
 
 ```bash
-"$PY" tools/detect_ai_patterns.py CAMINHO [--format json|md] [--only text|code|all] \
-    [--min-severity low|medium|high] [--ignore GLOB] [--exclude-tests] [--output ARQUIVO]
+"$PY" tools/detect_ai_patterns.py CAMINHO [--format json|md] [--only text|all] \
+    [--min-severity low|medium|high] [--ignore GLOB] [--output ARQUIVO]
 ```
 
-- Aceita arquivo ou pasta. Formatos de texto: `.md .txt .html .docx .pdf`; código: `.py` (`.ts .tsx .js .jsx` são lidos, **sem validação**).
+- Aceita arquivo ou pasta. **Só prosa:** `.md .txt .html .docx .pdf`. Um único arquivo de código é recusado (exit 2, "não é prosa"); numa pasta, é ignorado. `--only` fica por compatibilidade: `text` e `all` fazem o mesmo.
 - Saída: por arquivo, `score` (0,0 a 1,0), `confidence` (`low`, `medium`, `high`) e `signals` com linha e trecho. O JSON traz `experimental: true` e `notice`; o Markdown abre com o aviso.
 - **Exit:** 0 rodou · 1 caminho inexistente ou `--output` inutilizável · 2 nada foi analisado.
 
@@ -136,7 +136,7 @@ Dois arquivos, ou duas pastas. Dá o delta de score, a efetividade e os sinais e
 ```bash
 "$PY" tools/build_corpus.py init    --dir PASTA_FORA_DO_REPO
 "$PY" tools/build_corpus.py check   --dir PASTA --mode text
-"$PY" tools/build_corpus.py compare --dir PASTA --mode text    # ou --mode code, ou --mode all
+"$PY" tools/build_corpus.py compare --dir PASTA --mode text    # --mode all faz o mesmo; --mode code não existe mais
 ```
 
 - `init` cria `human\` e `ai\` e **recusa** uma pasta dentro do repositório. O padrão é a pasta temporária do sistema, que o Windows pode limpar: use `--dir`.
@@ -168,7 +168,7 @@ curl http://127.0.0.1:8765/health          # saúde; /readyz, /capabilities, /op
 
 ## 6. Quando NÃO usar
 
-- **Código-fonte no `naturalize`** (ele nem aceita: só `.md` e `.txt`). Não existe humanizador de código, e a remoção de marca estatística em código não compensa. Exceção segura: Unicode invisível.
+- **Código-fonte** no `detect_ai_patterns` (recusado) ou no `naturalize` (só `.md` e `.txt`). Não existe detector nem humanizador de código, e a remoção de marca estatística em código não compensa. Exceção segura: Unicode invisível.
 - **Acusar terceiros** ou usar o resultado como prova de autoria. O score é indicativo, não veredito.
 - **Onde a divulgação de autoria é exigida** (trabalho acadêmico, jurídico, contratual, política de plataforma). Remover marca nesse contexto é problema de conformidade, não tarefa técnica: devolva ao usuário.
 - **Trechos que devem ficar literais:** citações, normas, identificadores, comandos, caminhos, fórmulas.
@@ -182,7 +182,7 @@ curl http://127.0.0.1:8765/health          # saúde; /readyz, /capabilities, /op
 | `curl .../health` recusa a conexão | Serviço offline | Declare, peça autorização e suba; só afeta `/clean` e skills de limpeza |
 | "Python was not found" | O `python` do PATH é o stub da Microsoft Store | Use o `python` da `.venv` do repositório |
 | `.docx`/`.pdf` "pulado" com aviso, ou exit 2 de "nada analisado" | Grupo `formats` ausente | `uv pip install --group formats` e rode de novo |
-| TS/JS com `confidence: low` e nota de fallback | Sem tree-sitter: caiu no regex | Instale `formats`. Mesmo com ele, TS/TSX hoje emite 0 sinais |
+| `detect_ai_patterns` sai com exit 2 e "não é prosa" | Você passou um arquivo de código (`.py`, `.ts`, `.js`...) | Esperado: código está fora do escopo desde a R15 |
 | `pytest` sumiu depois de instalar `formats` | `uv sync --group formats` é sincronização **exata** | `uv pip install -r requirements-dev.txt`. Da próxima vez, `uv pip install --group formats` |
 | `naturalize` sai com exit 3 | Nada aplicável, ou é a 2ª passada (idempotente) | Esperado. Confira o diff do arquivo original |
 | `build_corpus compare` diz "faltam N arquivo(s) em human" | Os `.docx` foram pulados por falta de `formats` | Instale `formats`; não conclua "corpus vazio" |
@@ -203,8 +203,8 @@ curl http://127.0.0.1:8765/health          # saúde; /readyz, /capabilities, /op
 
 Para quem mantém o repositório. Cada passo leva um teste.
 
-- **Novo sinal de estilo:** declare em `tools/stylometry/__init__.py` (`CATEGORY`) e implemente em `tools/stylometry/text.py` (prosa) ou `code.py` (código). Todo sinal entra numa tabela parametrizada de `tests/test_stylometry_text.py` ou `test_stylometry_code.py`. Pesos: estrutural 2,0, lexical 1,0, métrica 0,5. **Não** recalibre com um corpus de 51 arquivos.
+- **Novo sinal de estilo:** declare em `tools/stylometry/__init__.py` (`CATEGORY`) e implemente em `tools/stylometry/text.py`. Todo sinal entra numa tabela parametrizada de `tests/test_stylometry_text.py`. Pesos: estrutural 2,0, lexical 1,0, métrica 0,5. **Não** recalibre com um corpus de 51 arquivos.
 - **Nova reescrita do `naturalize`:** acrescente em `_STEPS` de `tools/stylometry/naturalize.py`, mantenha a idempotência (o teste compara 2 passagens com 1) e acrescente um caso em `tests/fixtures/stylometry/naturalize/<nome>/before.md` e `after.md`.
-- **Novo caso do corpus:** `tools/build_corpus.py` (modos `text`, `code`, `all`); documente em `docs/CORPUS.md`.
+- **Novo caso do corpus:** `tools/build_corpus.py` (modos `text` e `all`, que fazem o mesmo); documente em `docs/CORPUS.md`.
 - **Campo novo no serviço:** só **aditivo** em `/detect` e `/inspect`; descreva no OpenAPI (`STYLOMETRY_NOTE` em `service/scripts/server.py`) e prenda o formato em teste.
-- **Depois de editar:** `python -m ruff check service tests tools`, `python -m ruff format --check service tests tools` e `python -m pytest -rs` (com o grupo `formats` instalado, ou 62 testes pulam).
+- **Depois de editar:** `python -m ruff check service tests tools`, `python -m ruff format --check service tests tools` e `python -m pytest -rs` (com o grupo `formats` instalado, ou os testes de `.docx` e `.pdf` pulam).

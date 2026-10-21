@@ -7,13 +7,12 @@ sides well enough to stay deterministic or whether a learned model is worth inve
 corpus is private and never versioned: it lives outside the repository (default ``<temp>/corpus``)
 and ``init`` refuses a folder inside it. Procedure and how to read the result: docs/CORPUS.md.
 
-``--mode text`` (default) measures prose, ``--mode code`` measures Python source and ``--mode all``
-does both, one after the other: scores of prose and of code are not comparable, so they are never
-pooled. Keep one corpus folder per mode.
+The scope is prose. Source files (.py and the like) are never scored: they are counted as ignored
+and the report says so (R15 dropped the code detector). ``--mode text`` and ``--mode all`` are
+kept for compatibility and do the same thing.
 
 Exit codes: 0 ran; 1 the corpus is missing, too small (fewer than 10 files in a folder), degenerate
-(no variance in either folder) or cannot be created (``--mode all``: the worst of the two); 2 usage
-error (argparse).
+(no variance in either folder) or cannot be created; 2 usage error (argparse).
 """
 
 from __future__ import annotations
@@ -32,13 +31,13 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from detect_ai_patterns import Options, iter_files, scan, utf8_streams
-from stylometry import DISCLAIMER, loaders, printable
+from stylometry import DISCLAIMER, printable
 
 ROOT = Path(__file__).resolve().parents[1]
 LONG_PATH = chr(92) * 2 + "?" + chr(92)  # the Windows extended-length prefix, which resolve() keeps
 SIDES = ("human", "ai")
-KINDS = ("text", "code")
-LEFT_OUT = {"text": "outra extensão ou código", "code": "outra extensão, texto ou TS/JS"}
+MODES = ("text", "all")  # both mean prose
+CODE_SUFFIXES = frozenset({".py", ".ts", ".tsx", ".js", ".jsx"})
 MIN_PER_SIDE = 10  # below this a standard deviation is not worth printing
 STABLE_PER_SIDE = 30  # below this d and AUC swing a lot from one sample to the next
 D_SUFFICIENT = 0.8  # Cohen's "large"
@@ -53,8 +52,8 @@ human/  textos que VOCÊ escreveu, sem ajuda de modelo (e-mails, notas, relatór
 ai/     textos que um modelo escreveu para você (cole a saída sem editar).
 
 - No mínimo 10 arquivos em cada pasta; 30 ou mais para o resultado ficar estável.
-- .md, .txt ou .html (.docx e .pdf só com o grupo `formats` instalado). Código não conta, a não
-  ser com `--mode code`: aí contam só os .py, e prosa não conta.
+- .md, .txt ou .html (.docx e .pdf só com o grupo `formats` instalado). Código (.py, .ts, ...)
+  não conta: o escopo é prosa.
 - Mesmo assunto e tamanho parecido nos dois lados, senão o detector mede tema e não estilo.
 - Nada daqui entra no git.
 
@@ -65,7 +64,8 @@ Depois, com tools/build_corpus.py: `check` confere o corpus e `compare` mede.
 class Side(NamedTuple):
     scores: list[float]  # ascending
     skipped: int  # a supported format that could not be read
-    ignored: int  # another extension, or code: the detector does not score it here
+    ignored: int  # another extension: the detector does not score it
+    code: int = 0  # of those, source files (the scope is prose)
 
 
 def default_dir() -> Path:
@@ -82,30 +82,13 @@ def quoted(path: Path) -> str:
     return f'"{printable(str(path))}"'
 
 
-def scan_python(root: Path, options: Options) -> tuple[list[float], int]:
-    """Scores of the ``.py`` files under ``root``, each scanned on its own. ``scan`` decides what
-    a "small project" is from how many code files it is given, so scanning a whole folder let the
-    folder's size, not the file, switch ``over_descriptive_name`` on: a side with more than 50
-    files scored lower than the same files in a side with 10."""
-    scores, skipped = [], 0
-    for path in iter_files(root, options):
-        fmt = loaders.format_of(path)
-        if fmt is not None and fmt[1] == "python":
-            one = scan(path, options)
-            scores += [f.score for f in one.files.values()]
-            skipped += len(one.skipped)
-    return scores, skipped
-
-
-def measure(corpus: Path, side: str, kind: str = "text") -> Side:
-    root, options = corpus / side, Options(only=kind, warn=False)
-    if kind == "code":
-        scores, skipped = scan_python(root.resolve(), options)
-    else:
-        result = scan(root, options)
-        scores, skipped = [f.score for f in result.files.values()], len(result.skipped)
-    seen = sum(1 for _ in iter_files(root.resolve(), options))
-    return Side(sorted(scores), skipped, seen - len(scores) - skipped)
+def measure(corpus: Path, side: str) -> Side:
+    root, options = corpus / side, Options(warn=False)
+    result = scan(root, options)
+    scores, skipped = [f.score for f in result.files.values()], len(result.skipped)
+    seen = list(iter_files(root.resolve(), options))
+    code = sum(1 for p in seen if p.suffix.lower() in CODE_SUFFIXES)
+    return Side(sorted(scores), skipped, len(seen) - len(scores) - skipped, code)
 
 
 def cohens_d(human: Sequence[float], ai: Sequence[float]) -> float | None:
@@ -157,9 +140,11 @@ def verdict(d: float, n1: int, n2: int) -> tuple[str, str]:
     return ML, note + " Vale investigar, mas um corpus pessoal é pequeno para treinar."
 
 
-def describe(name: str, side: Side, kind: str = "text") -> str:
+def describe(name: str, side: Side) -> str:
     extra = f", {side.skipped} pulado(s)" if side.skipped else ""
-    extra += f", {side.ignored} ignorado(s) ({LEFT_OUT[kind]})" if side.ignored else ""
+    extra += f", {side.ignored} ignorado(s) (outra extensão)" if side.ignored else ""
+    if side.code:
+        extra += f"; {side.code} arquivo(s) de código recusado(s): o escopo é prosa"
     if not side.scores:
         return f"{name}: 0 arquivos{extra}"
     s = side.scores
@@ -167,13 +152,13 @@ def describe(name: str, side: Side, kind: str = "text") -> str:
     return f"{name}: {len(s)} arquivos ({spread}){extra}"
 
 
-def check(corpus: Path, sides: dict[str, Side], kind: str = "text") -> int:
+def check(corpus: Path, sides: dict[str, Side]) -> int:
     print(f"corpus: {printable(str(corpus))}")
     short = {
         n: MIN_PER_SIDE - len(s.scores) for n, s in sides.items() if len(s.scores) < MIN_PER_SIDE
     }
     for name, side in sides.items():
-        print(describe(name, side, kind))
+        print(describe(name, side))
     for name, need in short.items():
         print(
             f"erro: faltam {need} arquivo(s) em {name} (mínimo {MIN_PER_SIDE} por pasta)",
@@ -182,20 +167,15 @@ def check(corpus: Path, sides: dict[str, Side], kind: str = "text") -> int:
     return 1 if short else 0
 
 
-def compare(corpus: Path, sides: dict[str, Side], kind: str = "text") -> int:
-    if code := check(corpus, sides, kind):
+def compare(corpus: Path, sides: dict[str, Side]) -> int:
+    if code := check(corpus, sides):
         return code
     human, ai = sides["human"].scores, sides["ai"].scores
     d = cohens_d(human, ai)
     if d is None:
-        why = (
-            "nenhum sinal disparou em arquivo nenhum (código limpo pontua 0)"
-            if kind == "code"
-            else "cópias do mesmo texto?"
-        )
         print(
             "erro: corpus degenerado: todos os arquivos de cada pasta têm o mesmo score "
-            f"({why}). Sem variância não há d nem AUC que valham.",
+            "(cópias do mesmo texto?). Sem variância não há d nem AUC que valham.",
             file=sys.stderr,
         )
         return 1
@@ -246,9 +226,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dir", type=Path, help="corpus folder (default: <temp>/corpus)")
     parser.add_argument(
         "--mode",
-        choices=(*KINDS, "all"),
+        choices=MODES,
         default="text",
-        help="what to measure: prose, Python source, or both one after the other (default: text)",
+        help="kept for compatibility: prose is the only scope, so both values do the same",
     )
     args = parser.parse_args(argv)
     utf8_streams()
@@ -263,14 +243,8 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    kinds = KINDS if args.mode == "all" else (args.mode,)
-    codes = []
-    for kind in kinds:
-        if len(kinds) > 1:
-            print(f"== modo: {kind} ==")
-        sides = {side: measure(corpus, side, kind) for side in SIDES}
-        codes.append((check if args.command == "check" else compare)(corpus, sides, kind))
-    return max(codes)
+    sides = {side: measure(corpus, side) for side in SIDES}
+    return (check if args.command == "check" else compare)(corpus, sides)
 
 
 if __name__ == "__main__":

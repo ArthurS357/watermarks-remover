@@ -22,7 +22,6 @@ from stylometry_support import in_process
 
 AI_TEXT = (FIXTURES / "text_ai_like.md").read_text(encoding="utf-8")
 HUMAN_TEXT = (FIXTURES / "text_human_like.md").read_text(encoding="utf-8")
-AI_PY = (FIXTURES / "code_ai_like.py").read_text(encoding="utf-8")
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +62,7 @@ def tree(tmp_path):
     put(tmp_path, "docs/guide.md", AI_TEXT)
     put(tmp_path, "docs/human.md", HUMAN_TEXT)
     put(tmp_path, "notes.txt", "vale notar que sim. " * 30)
-    put(tmp_path, "pkg/mod.py", AI_PY)
+    put(tmp_path, "pkg/mod.py", "x = 1  # Initialize the counter\n" * 40)  # code: out of scope
     put(tmp_path, "web/app.ts", 'const a = "x" as const;\n' * 4)
     put(tmp_path, "data.json", "{}")
     put(tmp_path, "image.png", b"\x89PNG\x00")
@@ -87,8 +86,8 @@ def test_json_report_has_the_documented_shape(tree, capsys):
         "notice",
     }
     assert report["disclaimer"] == DISCLAIMER
-    assert report["files_scanned"] == 5
-    assert report["by_format"] == {"markdown": 2, "python": 1, "text": 1, "typescript": 1}
+    assert report["files_scanned"] == 3
+    assert report["by_format"] == {"markdown": 2, "text": 1}
     entry = report["scores"]["docs/guide.md"]
     assert set(entry) == {"format", "kind", "score", "confidence", "signals", "notes"}
     assert 0.0 <= entry["score"] <= 1.0
@@ -156,8 +155,8 @@ def test_default_ignores_skip_dependency_and_cache_trees(tmp_path, capsys):
 
 
 def test_ignore_is_repeatable_and_matches_paths_and_names(tree, capsys):
-    _, report, _ = run_json(capsys, tree, "--ignore", "docs/*", "--ignore", "*.txt")
-    assert sorted(report["scores"]) == ["pkg/mod.py", "web/app.ts"]
+    _, report, _ = run_json(capsys, tree, "--ignore", "docs/guide.md", "--ignore", "*.txt")
+    assert sorted(report["scores"]) == ["docs/human.md"]
 
 
 def test_ignore_prunes_whole_directories(tree, capsys):
@@ -165,31 +164,31 @@ def test_ignore_prunes_whole_directories(tree, capsys):
     assert not any(k.startswith("docs/") for k in report["scores"])
 
 
-@pytest.mark.parametrize(
-    ("only", "kinds"), [("text", {"text"}), ("code", {"code"}), ("all", {"text", "code"})]
-)
-def test_only_selects_prose_or_code(tree, capsys, only, kinds):
+def test_source_code_is_never_scanned(tree, capsys):
+    _, report, _ = run_json(capsys, tree)
+    assert not any(k.endswith((".py", ".ts")) for k in report["scores"])
+    assert {v["kind"] for v in report["scores"].values()} == {"text"}
+
+
+@pytest.mark.parametrize("only", ["text", "all"])
+def test_only_is_kept_for_compatibility_and_both_values_mean_prose(tree, capsys, only):
+    _, everything, _ = run_json(capsys, tree)
     _, report, _ = run_json(capsys, tree, "--only", only)
-    assert {v["kind"] for v in report["scores"].values()} == kinds
+    assert report == everything
 
 
-def test_exclude_tests_skips_test_files_and_folders(tmp_path, capsys):
-    for name in (
-        "src/app.py",
-        "src/test_helper.py",
-        "src/app_test.py",
-        "src/conftest.py",
-        "tests/test_a.py",
-        "tests/fixtures/ai.md",
-        "src/ui.test.ts",
-        "src/ui.spec.tsx",
-        "src/ui.ts",
-    ):
-        put(tmp_path, name, "x = 1\n")
-    _, everything, _ = run_json(capsys, tmp_path)
-    _, report, _ = run_json(capsys, tmp_path, "--exclude-tests")
-    assert len(everything["scores"]) == 9  # tests/fixtures/ai.md is prose, the rest code
-    assert sorted(report["scores"]) == ["src/app.py", "src/ui.ts"]
+def test_only_code_is_a_usage_error(tree):
+    with pytest.raises(SystemExit) as stop:
+        cli.main([str(tree), "--only", "code"])
+    assert stop.value.code == 2
+
+
+@pytest.mark.parametrize("name", ["mod.py", "app.ts", "view.tsx", "util.js", "ui.jsx"])
+def test_a_single_source_file_is_refused_with_a_clear_message(tmp_path, capsys, name):
+    path = put(tmp_path, name, "x = 1\n")
+    code, out, err = run(capsys, path)
+    assert code == 2 and out == ""
+    assert "não é prosa" in err and "fora do escopo" in err
 
 
 def test_symlinks_are_never_followed(tmp_path, capsys):
@@ -439,33 +438,6 @@ def test_only_unreadable_supported_files_exit_2(tmp_path, capsys):
     assert len(report["skipped"]) == 1
 
 
-# --- context handed to the code detectors ------------------------------------------------------
-
-
-def test_small_project_context_limits_over_descriptive_names(tmp_path, capsys):
-    source = "def handle_user_authentication_request():\n    pass\n"
-    for i in range(3):
-        put(tmp_path, f"small/m{i}.py", source)
-    _, small, _ = run_json(capsys, tmp_path / "small")
-    assert "over_descriptive_name" in small["by_signal"]
-    for i in range(cli.SMALL_PROJECT_FILES + 1):
-        put(tmp_path, f"big/m{i}.py", source)
-    _, big, _ = run_json(capsys, tmp_path / "big")
-    assert "over_descriptive_name" not in big["by_signal"]
-
-
-def test_requires_python_is_read_from_the_nearest_pyproject(tmp_path, capsys):
-    loaders.find_requires_python.cache_clear()
-    source = "from __future__ import annotations\n\nx = 1\n"
-    put(tmp_path, "new/pyproject.toml", '[project]\nname = "n"\nrequires-python = ">=3.14"\n')
-    put(tmp_path, "new/m.py", source)
-    put(tmp_path, "old/pyproject.toml", '[project]\nname = "o"\nrequires-python = ">=3.12"\n')
-    put(tmp_path, "old/m.py", source)
-    _, report, _ = run_json(capsys, tmp_path)
-    fired = {k for k, v in report["scores"].items() if v["signals"]}
-    assert fired == {"new/m.py"}
-
-
 # --- real process behaviour --------------------------------------------------------------------
 
 
@@ -492,7 +464,7 @@ def test_script_exit_codes_and_help(tmp_path):
     assert run_script(tmp_path / "missing").returncode == 1
     assert run_script(tmp_path).returncode == 2
     help_text = run_script("--help").stdout.decode("utf-8")
-    for flag in ("--format", "--only", "--min-severity", "--ignore", "--output", "--exclude-tests"):
+    for flag in ("--format", "--only", "--min-severity", "--ignore", "--output"):
         assert flag in help_text
     assert run_script(tmp_path, "--format", "xml").returncode == 2  # argparse usage error
 
