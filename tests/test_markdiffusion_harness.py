@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
-import struct
 import subprocess
 import sys
-import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,9 +30,15 @@ def _is_fake_upstream_module(name: str) -> bool:
 def _forget_the_fake_upstream():
     """The in-process ``_cmd_*`` tests put the fake upstream on ``sys.path`` and import its fake
     ``PIL`` and ``markdiffusion``. Left in ``sys.modules``, a ``PIL`` without ``__version__`` breaks
-    the first later ``import pypdf`` in the same pytest process (pypdf reads ``PIL.__version__``)."""
+    the first later ``import pypdf`` in the same pytest process (pypdf reads ``PIL.__version__``).
+
+    The other direction matters too: a real Pillow already in ``sys.modules`` (a pytest plugin such
+    as ``dash`` imports it at startup) would win over the fake one, and the harness would write real
+    PNGs and parse the fixture for real. So the real modules are hidden for the test and put back."""
     path = list(sys.path)
     before = {n: m for n, m in sys.modules.items() if _is_fake_upstream_module(n)}
+    for name in before:
+        del sys.modules[name]
     yield
     sys.path[:] = path
     for name in [n for n in sys.modules if _is_fake_upstream_module(n)]:
@@ -123,16 +128,15 @@ def _make_fake_upstream(tmp_path: Path) -> Path:
     return upstream
 
 
-def _minimal_png() -> bytes:
-    def chunk(ctype: bytes, payload: bytes) -> bytes:
-        crc = zlib.crc32(ctype)
-        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
-        return struct.pack(">I", len(payload)) + ctype + payload + struct.pack(">I", crc)
+# 1x1 transparent RGBA PNG, complete (IHDR, IDAT, IEND). The old hand-built one had a 3-byte scanline
+# for a 4-byte row (filter byte + RGB): Pillow 12 let it pass, Pillow 13 says "image file is truncated".
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+)
 
-    sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-    idat = zlib.compress(b"\x00\x00\x00")
-    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+def _minimal_png() -> bytes:
+    return _PNG_1X1
 
 
 def _import_harness():
