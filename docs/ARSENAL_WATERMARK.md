@@ -87,15 +87,19 @@ Sem `formats`, as ferramentas ainda rodam: `.docx` e `.pdf` são pulados com avi
 |---|---|
 | **Suspeito de marca num documento** (quero só olhar) | `detect_ai_patterns.py CAMINHO --format md`. **Se o texto é português, ignore o score** e use a lista de sinais só para ver onde olhar. Em inglês, ainda é indicativo, não veredito. Para Unicode e metadados: `inspect_file.py CAMINHO --json` |
 | **Quero limpar Unicode invisível de um texto** (Camada A) | `clean_text.py ARQ -o SAIDA --stats` (sem servidor) |
-| **Quero limpar metadados** (C2PA/EXIF/XMP, imagem ou documento) | `clean_file.py ARQ -o SAIDA` (sem servidor), ou, com o serviço no ar, `POST /clean`. Inspecione antes com `inspect_file.py` |
+| **Quero limpar metadados** (C2PA/EXIF/XMP, imagem ou documento) | `clean_file.py ARQ -o SAIDA` (sem servidor), ou, com o serviço no ar, `POST /clean`. Inspecione antes com `inspect_file.py`. **Se o serviço não estiver rodando, pare e peça ao usuário para iniciar.** |
 | **Quero reduzir marca estatística em prosa** (Camada B) | Reescreva o texto à mão ou com o seu agente, depois limpe de novo a Camada A. Meça com `detect_ai_patterns` antes e depois. Sem garantia; em português, sem validação |
 | **Quero naturalizar um `.md` ou `.txt`** | `naturalize.py ARQ.md --diff-only --format md` → **ler o diff inteiro** → `--output COPIA.md` ou `--in-place` → `measure_skill_effectiveness.py ANTES DEPOIS` |
 | **É `.docx`, `.pdf` ou `.html`** | Confirme o `formats` (§2). Sem ele, declare a limitação e pare. `.docx` perde o negrito inline na leitura: `bold_lead_in` não dispara |
 | **É código-fonte** | Fora do escopo: o detector recusa `.py`, `.ts`, `.js` e afins. **Não** use `naturalize` e **não** reescreva código para baixar score |
 | **Quero decidir se vale treinar um modelo (ML)** | `build_corpus.py init` → preencher `human\` e `ai\` com 10 ou mais arquivos cada, **no mesmo formato** → `check` → `compare` → ler d, intervalo e AUC. Com o corpus pessoal atual, nenhum número é válido |
-| **O serviço está offline** | Declare ao usuário (`curl http://127.0.0.1:8765/health` recusa). Peça autorização, suba com `start-watermarks-server.ps1`, ou entregue o comando e pare |
+| **O serviço está offline** | Declare ao usuário (`curl http://127.0.0.1:8765/health` recusa). **Não suba o servidor você mesmo**: peça autorização, entregue o comando e pare (ver "Regra de Ouro do Serviço", §5) |
 
 ## 5. Comandos exatos
+
+### Regra de Ouro do Serviço
+
+> **Atenção (IA):** NUNCA inicie o `watermarks-server` automaticamente. O servidor roda em primeiro plano e travará a sessão. Se o endpoint `/health` estiver offline, **peça autorização ao usuário** e instrua-o a abrir uma nova janela de terminal e rodar `watermarks-server` manualmente (na prática: `.\start-watermarks-server.ps1` ou `python service/scripts/server.py --host 127.0.0.1 --port 8765`, a partir da raiz do repositório).
 
 Execute a partir da raiz do repositório (`$py` e `$PY` são o Python da §2).
 
